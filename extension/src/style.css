@@ -28,3 +28,21 @@ p {
   font-size: 14px;
 }
 
+button {
+  width: 100%;
+  margin: 4px 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: #146ef5;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  padding: 10px 12px;
+}
+
+button:focus-visible {
+  outline: 3px solid #9ec5ff;
+  outline-offset: 2px;
+}
