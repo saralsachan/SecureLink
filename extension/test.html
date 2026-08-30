@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SecureLink Structural Map Test</title>
+    <style>
+      body {
+        color: #17202a;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        margin: 32px;
+      }
+
+      form {
+        display: grid;
+        gap: 12px;
+        max-width: 360px;
+      }
+
+      label {
+        display: grid;
+        gap: 4px;
+      }
+
+      input,
+      button {
+        font: inherit;
+        padding: 8px 10px;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      .offscreen {
+        position: absolute;
+        top: -200px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Structural Map Test Page</h1>
+    <div>This plain div should not appear in the structural map.</div>
+    <div role="button" tabindex="0">This role button div should also be skipped.</div>
+
+    <form aria-label="Signup form">
+      <label>
+        Name
+        <input type="text" aria-label="Full name" />
+      </label>
+      <label>
+        Email
+        <input type="email" aria-label="Email address" />
+      </label>
+      <button type="submit">Create Account</button>
+    </form>
+
+    <button type="button" aria-label="Standalone test button">
+      Standalone Button
+    </button>
+    <a href="https://example.com">Example Link</a>
+
+    <button class="hidden" type="button">Hidden Button</button>
+    <button class="offscreen" type="button">Offscreen Button</button>
+
+    <script src="./test-manual.js"></script>
+  </body>
+</html>
+
