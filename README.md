@@ -21,6 +21,19 @@ npm run build
 
 The production extension bundle is emitted to `extension/dist`.
 
+## Browser Models
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r tools/model-requirements.txt
+python tools/export_browser_models.py
+```
+
+The script exports `extension/models/mobilevit_xxs_int8.onnx`, downloads
+`extension/models/yunet_face_detection.onnx`, validates both files, and prints their
+sizes.
+
 ## Server
 
 ```bash
@@ -34,4 +47,3 @@ uvicorn main:app
 ```
 
 The API starts at `http://127.0.0.1:8000`.
-
