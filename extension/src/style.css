@@ -7,7 +7,7 @@
 }
 
 body {
-  min-width: 260px;
+  min-width: 300px;
   margin: 0;
 }
 
@@ -45,4 +45,19 @@ button {
 button:focus-visible {
   outline: 3px solid #9ec5ff;
   outline-offset: 2px;
+}
+
+img {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  margin-top: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  object-fit: contain;
+  background: #ffffff;
+}
+
+img[hidden] {
+  display: none;
 }

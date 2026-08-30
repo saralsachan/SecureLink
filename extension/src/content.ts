@@ -1,5 +1,6 @@
 type AgentMessage = {
   type: "SECURELINK_ACTIVATE_AGENT";
+  screenshotBase64: string;
   task?: string;
 };
 
@@ -314,7 +315,7 @@ chrome.runtime.onMessage.addListener(
 
         const action = await sendToAgent({
           structural_map: structuralMap,
-          screenshot_base64: "",
+          screenshot_base64: message.screenshotBase64,
           task: message.task ?? "Activate agent"
         });
 

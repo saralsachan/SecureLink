@@ -1,6 +1,8 @@
 import "./style.css";
 
 const activateButton = document.querySelector<HTMLButtonElement>("#activate-agent");
+const capturePreview =
+  document.querySelector<HTMLImageElement>("#capture-preview");
 const statusText = document.querySelector<HTMLParagraphElement>("#status");
 
 function setStatus(message: string): void {
@@ -9,11 +11,46 @@ function setStatus(message: string): void {
   }
 }
 
+function stripDataUrlPrefix(dataUrl: string): string {
+  const [, base64] = dataUrl.split(",", 2);
+  return base64 ?? dataUrl;
+}
+
+async function captureVisibleTab(): Promise<{
+  dataUrl: string;
+  screenshotBase64: string;
+}> {
+  console.info("SecureLink popup: capturing visible tab.");
+
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(
+      chrome.windows.WINDOW_ID_CURRENT,
+      { format: "png" },
+      (capturedDataUrl) => {
+        const error = chrome.runtime.lastError;
+
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+
+        resolve(capturedDataUrl);
+      }
+    );
+  });
+
+  console.info("SecureLink popup: captured visible tab PNG.");
+  return {
+    dataUrl,
+    screenshotBase64: stripDataUrlPrefix(dataUrl)
+  };
+}
+
 activateButton?.addEventListener("click", async () => {
   const task = "Activate agent";
 
   console.info("SecureLink popup: activation requested.");
-  setStatus("Connecting...");
+  setStatus("Capturing tab...");
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -24,12 +61,22 @@ activateButton?.addEventListener("click", async () => {
   }
 
   try {
+    const screenshot = await captureVisibleTab();
+
+    if (capturePreview) {
+      capturePreview.src = screenshot.dataUrl;
+      capturePreview.hidden = false;
+    }
+
+    setStatus("Sending page context...");
     console.info("SecureLink popup: sending activation message to tab.", tab.id);
     const response = await chrome.tabs.sendMessage<{
       type: "SECURELINK_ACTIVATE_AGENT";
+      screenshotBase64: string;
       task: string;
     }, { ok: boolean; title: string; action?: unknown; error?: string }>(tab.id, {
       type: "SECURELINK_ACTIVATE_AGENT",
+      screenshotBase64: screenshot.screenshotBase64,
       task
     });
 
@@ -40,7 +87,11 @@ activateButton?.addEventListener("click", async () => {
         : `Connection failed: ${response.error ?? "Unknown error"}`
     );
   } catch (error) {
-    console.error("SecureLink popup: content connection failed.", error);
-    setStatus("Content script is not available on this page.");
+    console.error("SecureLink popup: activation failed.", error);
+    setStatus(
+      error instanceof Error
+        ? `Activation failed: ${error.message}`
+        : "Activation failed."
+    );
   }
 });
