@@ -5,6 +5,19 @@ const capturePreview =
   document.querySelector<HTMLImageElement>("#capture-preview");
 const statusText = document.querySelector<HTMLParagraphElement>("#status");
 
+type ActivationRequest = {
+  type: "SECURELINK_ACTIVATE_AGENT";
+  screenshotBase64: string;
+  task: string;
+};
+
+type ActivationResponse = {
+  ok: boolean;
+  title: string;
+  action?: unknown;
+  error?: string;
+};
+
 function setStatus(message: string): void {
   if (statusText) {
     statusText.textContent = message;
@@ -46,6 +59,38 @@ async function captureVisibleTab(): Promise<{
   };
 }
 
+async function injectContentScript(tabId: number): Promise<void> {
+  console.info("SecureLink popup: injecting content script into tab.", tabId);
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["assets/content.js"]
+  });
+}
+
+async function sendActivationMessage(
+  tabId: number,
+  message: ActivationRequest
+): Promise<ActivationResponse> {
+  try {
+    return await chrome.tabs.sendMessage<ActivationRequest, ActivationResponse>(
+      tabId,
+      message
+    );
+  } catch (error) {
+    console.warn(
+      "SecureLink popup: content script was unavailable, injecting and retrying.",
+      error
+    );
+
+    await injectContentScript(tabId);
+    return chrome.tabs.sendMessage<ActivationRequest, ActivationResponse>(
+      tabId,
+      message
+    );
+  }
+}
+
 activateButton?.addEventListener("click", async () => {
   const task = "Activate agent";
 
@@ -70,11 +115,7 @@ activateButton?.addEventListener("click", async () => {
 
     setStatus("Sending page context...");
     console.info("SecureLink popup: sending activation message to tab.", tab.id);
-    const response = await chrome.tabs.sendMessage<{
-      type: "SECURELINK_ACTIVATE_AGENT";
-      screenshotBase64: string;
-      task: string;
-    }, { ok: boolean; title: string; action?: unknown; error?: string }>(tab.id, {
+    const response = await sendActivationMessage(tab.id, {
       type: "SECURELINK_ACTIVATE_AGENT",
       screenshotBase64: screenshot.screenshotBase64,
       task
