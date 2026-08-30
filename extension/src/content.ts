@@ -1,5 +1,6 @@
 type AgentMessage = {
   type: "SECURELINK_ACTIVATE_AGENT";
+  task?: string;
 };
 
 type BoundingBox = {
@@ -18,7 +19,39 @@ type ElementNode = {
   ariaLabel: string | null;
 };
 
-const STRUCTURAL_ID_ATTR = "data-securelink-id";
+type AgentStepPayload = {
+  structural_map: ElementNode[];
+  screenshot_base64: string;
+  task: string;
+};
+
+type AgentAction =
+  | {
+      action: "click";
+      target_id: string;
+      reasoning: string;
+    }
+  | {
+      action: "scroll";
+      amount: number;
+      reasoning: string;
+      target_id?: string;
+    };
+
+type AgentActivationResponse =
+  | {
+      ok: true;
+      title: string;
+      action: AgentAction;
+    }
+  | {
+      ok: false;
+      title: string;
+      error: string;
+    };
+
+const AGENT_STEP_URL = "http://localhost:8000/agent/step";
+const STRUCTURAL_ID_ATTR = "data-agent-id";
 const STRUCTURAL_ELEMENT_SELECTOR = [
   "input",
   "button",
@@ -196,28 +229,106 @@ function extractStructuralMap(): ElementNode[] {
     .map(toElementNode);
 }
 
+async function sendToAgent(payload: AgentStepPayload): Promise<AgentAction> {
+  console.info("SecureLink sending payload to agent:", payload);
+
+  const response = await fetch(AGENT_STEP_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Agent request failed with ${response.status}`);
+  }
+
+  const action = (await response.json()) as AgentAction;
+  console.info("SecureLink received action:", action);
+  return action;
+}
+
+function executeAction(action: AgentAction): void {
+  console.info("SecureLink executing action:", action);
+
+  if (action.action === "click") {
+    const target = document.querySelector<HTMLElement>(
+      `[${STRUCTURAL_ID_ATTR}="${CSS.escape(action.target_id)}"]`
+    );
+
+    if (!target) {
+      throw new Error(`No element found for target_id ${action.target_id}`);
+    }
+
+    target.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        view: window
+      })
+    );
+    console.info("SecureLink dispatched click on:", target);
+    return;
+  }
+
+  if (action.action === "scroll") {
+    window.scrollBy({
+      top: action.amount,
+      behavior: "smooth"
+    });
+    console.info("SecureLink scrolled window by:", action.amount);
+  }
+}
+
 const secureLinkWindow = window as typeof window & {
   secureLink?: {
     extractStructuralMap: typeof extractStructuralMap;
+    sendToAgent: typeof sendToAgent;
+    executeAction: typeof executeAction;
   };
 };
 
 secureLinkWindow.secureLink = {
-  extractStructuralMap
+  extractStructuralMap,
+  sendToAgent,
+  executeAction
 };
 
 chrome.runtime.onMessage.addListener(
   (
     message: AgentMessage,
     _sender: chrome.runtime.MessageSender,
-    sendResponse: (response: { ok: boolean; title: string }) => void
+    sendResponse: (response: AgentActivationResponse) => void
   ) => {
     if (message.type !== "SECURELINK_ACTIVATE_AGENT") {
       return false;
     }
 
-    console.info("SecureLink popup connected on:", document.title);
-    sendResponse({ ok: true, title: document.title });
-    return false;
+    void (async () => {
+      try {
+        console.info("SecureLink popup connected on:", document.title);
+
+        const structuralMap = extractStructuralMap();
+        console.info("SecureLink extracted structural map:", structuralMap);
+
+        const action = await sendToAgent({
+          structural_map: structuralMap,
+          screenshot_base64: "",
+          task: message.task ?? "Activate agent"
+        });
+
+        executeAction(action);
+        sendResponse({ ok: true, title: document.title, action });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Unknown agent activation error";
+
+        console.error("SecureLink agent flow failed:", error);
+        sendResponse({ ok: false, title: document.title, error: message });
+      }
+    })();
+
+    return true;
   }
 );

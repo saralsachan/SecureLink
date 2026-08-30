@@ -1,5 +1,5 @@
 (function () {
-  const idAttribute = "data-securelink-id";
+  const idAttribute = "data-agent-id";
   const selector = [
     "input",
     "button",

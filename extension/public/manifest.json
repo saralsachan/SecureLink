@@ -17,5 +17,6 @@
       "js": ["assets/content.js"]
     }
   ],
-  "permissions": ["activeTab", "scripting", "storage"]
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://localhost:8000/*"]
 }
