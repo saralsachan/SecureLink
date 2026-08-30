@@ -5,12 +5,16 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --disable-warning=ExperimentalWarning --test tests/detectSensitiveDomElements.test.ts"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.306",
     "@types/node": "^22.10.5",
     "typescript": "^5.7.3",
     "vite": "^6.0.7"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.29.0"
   }
 }

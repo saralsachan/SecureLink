@@ -1,23 +1,9 @@
+import type { BoundingBox, ElementNode } from "./dom-sensitivity";
+
 type AgentMessage = {
   type: "SECURELINK_ACTIVATE_AGENT";
   screenshotBase64: string;
   task?: string;
-};
-
-type BoundingBox = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
-
-type ElementNode = {
-  id: string;
-  tag: string;
-  role: string | null;
-  bbox: BoundingBox;
-  inputType: string | null;
-  ariaLabel: string | null;
 };
 
 type AgentStepPayload = {
@@ -220,7 +206,9 @@ function toElementNode(element: HTMLElement): ElementNode {
       h: Math.round(rect.height)
     },
     inputType: getInputType(element),
-    ariaLabel: getAriaLabel(element)
+    ariaLabel: getAriaLabel(element),
+    autocomplete: element.getAttribute("autocomplete"),
+    placeholder: element.getAttribute("placeholder")
   };
 }
 
