@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 import onnx
@@ -12,9 +13,11 @@ from transformers import AutoModelForImageClassification
 
 
 DEFAULT_MOBILEVIT_MODEL_ID = "apple/mobilevit-xx-small"
-DEFAULT_YUNET_URL = (
+DEFAULT_YUNET_URLS = (
     "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
-    "face_detection_yunet_2023mar.onnx"
+    "face_detection_yunet_2023mar.onnx",
+    "https://huggingface.co/opencv/face_detection_yunet/resolve/main/"
+    "face_detection_yunet_2023mar.onnx",
 )
 
 
@@ -56,6 +59,7 @@ def export_mobilevit_to_onnx(
             },
             opset_version=opset,
             do_constant_folding=True,
+            dynamo=False,
         )
 
         print("Validating exported MobileViT FP32 ONNX.")
@@ -72,14 +76,22 @@ def export_mobilevit_to_onnx(
     onnx.checker.check_model(onnx.load(output_path))
 
 
-def download_yunet(output_path: Path, url: str) -> None:
-    print(f"Downloading YuNet face detector ONNX: {url}")
-    response = requests.get(url, timeout=120)
-    response.raise_for_status()
-    output_path.write_bytes(response.content)
+def download_yunet(output_path: Path, urls: Sequence[str]) -> None:
+    last_error: Exception | None = None
+    for url in urls:
+        print(f"Downloading YuNet face detector ONNX: {url}")
+        try:
+            response = requests.get(url, timeout=120)
+            response.raise_for_status()
+            output_path.write_bytes(response.content)
 
-    print("Validating YuNet ONNX.")
-    onnx.checker.check_model(onnx.load(output_path))
+            print("Validating YuNet ONNX.")
+            onnx.checker.check_model(onnx.load(output_path))
+            return
+        except requests.RequestException as exc:
+            last_error = exc
+            print(f"  Failed (trying next source): {exc}")
+    raise RuntimeError(f"Could not download YuNet from any source: {last_error}")
 
 
 def main() -> None:
@@ -96,8 +108,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--yunet-url",
-        default=DEFAULT_YUNET_URL,
-        help="URL for the YuNet ONNX model.",
+        action="append",
+        default=list(DEFAULT_YUNET_URLS),
+        help=(
+            "Source URL(s) for the YuNet ONNX model (tried in order). "
+            "Repeat the flag to add more mirrors; defaults to GitHub opencv_zoo "
+            "then the Hugging Face opencv/face_detection_yunet mirror."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -130,7 +147,7 @@ def main() -> None:
         image_size=args.image_size,
         opset=args.opset,
     )
-    download_yunet(output_path=yunet_path, url=args.yunet_url)
+    download_yunet(output_path=yunet_path, urls=args.yunet_url)
 
     print("\nExported browser models:")
     for path in (mobilevit_path, yunet_path):
