@@ -33,6 +33,20 @@ export type SensitiveHit = {
   source: "dom";
 };
 
+export type VisualSensitivityClass =
+  | "face"
+  | "email"
+  | "phone"
+  | "card-number"
+  | "name";
+
+export type VisualSensitivityHit = {
+  bbox: BoundingBox;
+  sensitivityClass: VisualSensitivityClass;
+  confidence: number;
+  source: "visual";
+};
+
 const AUTOCOMPLETE_SENSITIVITY: Readonly<Record<string, SensitiveClass>> = {
   "cc-number": "card-number",
   "cc-csc": "card-cvc",

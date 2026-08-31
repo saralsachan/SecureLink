@@ -1,6 +1,10 @@
 /// <reference lib="webworker" />
 
 import * as ort from "onnxruntime-web";
+import { detectFaces } from "./blazeface";
+import { runOcr } from "./pii";
+import { classifyOcrLines } from "./pii-detection";
+import type { VisualSensitivityHit } from "./dom-sensitivity";
 
 const MODEL_SIZE = 256;
 const INPUT_NAME = "pixel_values";
@@ -19,7 +23,20 @@ type InferRequest = {
   imageData: ImageData;
 };
 
-type WorkerRequest = InitRequest | InferRequest;
+type AnalyseRequest = {
+  id: number;
+  kind: "analyse";
+  imageData: ImageData;
+};
+
+type WorkerRequest = InitRequest | InferRequest | AnalyseRequest;
+
+export type AnalysisTimings = {
+  faceDetectionMs: number;
+  ocrMs: number;
+  nerMs: number;
+  totalMs: number;
+};
 
 export type WorkerResponse =
   | {
@@ -39,8 +56,15 @@ export type WorkerResponse =
     }
   | {
       id: number;
+      ok: true;
+      kind: "analyse";
+      hits: VisualSensitivityHit[];
+      timings: AnalysisTimings;
+    }
+  | {
+      id: number;
       ok: false;
-      kind: "init" | "infer";
+      kind: "init" | "infer" | "analyse";
       error: string;
     };
 
@@ -114,7 +138,67 @@ async function preprocess(imageData: ImageData): Promise<Float32Array> {
   return input;
 }
 
+async function runAnalysis(imageData: ImageData, id: number): Promise<WorkerResponse> {
+  const totalStarted = performance.now();
+
+  try {
+    const faceStarted = performance.now();
+    const faces = await detectFaces(imageData);
+    const faceDetectionMs = performance.now() - faceStarted;
+    console.info(
+      `[vision] face detection took ${faceDetectionMs.toFixed(1)} ms (${faces.length} faces)`
+    );
+
+    const ocrStarted = performance.now();
+    const lines = await runOcr(imageData);
+    const ocrMs = performance.now() - ocrStarted;
+    console.info(
+      `[vision] OCR took ${ocrMs.toFixed(1)} ms (${lines.length} lines)`
+    );
+
+    const nerStarted = performance.now();
+    const piiHits = classifyOcrLines(lines);
+    const nerMs = performance.now() - nerStarted;
+    console.info(
+      `[vision] NER took ${nerMs.toFixed(1)} ms (${piiHits.length} PII hits)`
+    );
+
+    const faceHits: VisualSensitivityHit[] = faces.map((face) => ({
+      bbox: face.bbox,
+      sensitivityClass: "face",
+      confidence: face.confidence,
+      source: "visual"
+    }));
+
+    const timings: AnalysisTimings = {
+      faceDetectionMs,
+      ocrMs,
+      nerMs,
+      totalMs: performance.now() - totalStarted
+    };
+
+    return {
+      id,
+      ok: true,
+      kind: "analyse",
+      hits: [...faceHits, ...piiHits],
+      timings
+    };
+  } catch (error) {
+    return {
+      id,
+      ok: false,
+      kind: "analyse",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 async function handleRequest(request: WorkerRequest): Promise<WorkerResponse> {
+  if (request.kind === "analyse") {
+    return runAnalysis(request.imageData, request.id);
+  }
+
   if (request.kind === "init") {
     const loadStarted = performance.now();
 

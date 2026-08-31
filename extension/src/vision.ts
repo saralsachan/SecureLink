@@ -1,9 +1,19 @@
-import type { WorkerResponse } from "./vision.worker";
+import type {
+  WorkerResponse,
+  AnalysisTimings
+} from "./vision.worker";
+import type { VisualSensitivityHit } from "./dom-sensitivity";
 
 const DEFAULT_MODEL_RELATIVE_URL = "models/mobilevit_xxs_int8.onnx";
 
 type CallInit = { kind: "init"; modelUrl: string };
 type CallInfer = { kind: "infer"; imageData: ImageData };
+type CallAnalyse = { kind: "analyse"; imageData: ImageData };
+
+export type VisionAnalysis = {
+  hits: VisualSensitivityHit[];
+  timings: AnalysisTimings;
+};
 
 let worker: Worker | null = null;
 let idCounter = 0;
@@ -49,7 +59,7 @@ function ensureWorker(): Worker {
   return worker;
 }
 
-function call<T extends WorkerResponse>(request: CallInit | CallInfer): Promise<T> {
+function call<T extends WorkerResponse>(request: CallInit | CallInfer | CallAnalyse): Promise<T> {
   const id = idCounter++;
   const idRequest = { ...request, id };
 
@@ -100,4 +110,21 @@ export async function runVisionModel(imageData: ImageData): Promise<Float32Array
 
 export function getVisionBackend(): Promise<"webgpu" | "wasm"> {
   return initVisionModel();
+}
+
+export async function runVisionAnalysis(imageData: ImageData): Promise<VisionAnalysis> {
+  const response = await call<WorkerResponse>({
+    kind: "analyse",
+    imageData
+  });
+
+  if (!response.ok || response.kind !== "analyse") {
+    const error = !response.ok ? response.error : "Unexpected worker response";
+    throw new Error(`Vision analysis failed: ${error}`);
+  }
+
+  return {
+    hits: response.hits,
+    timings: response.timings
+  };
 }

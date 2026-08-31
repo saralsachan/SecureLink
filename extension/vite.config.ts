@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 
@@ -18,10 +18,11 @@ function copyToOutDirPlugin(): Plugin {
       const ortTarget = resolve(outDir, "assets/ort");
       mkdirSync(ortTarget, { recursive: true });
 
-      for (const fileName of readdirSync(onnxRuntimeDist)) {
-        if (!fileName.startsWith("ort-wasm")) {
-          continue;
-        }
+      const ortWasmFiles = readdirSync(onnxRuntimeDist).filter((fileName) =>
+        fileName.startsWith("ort-wasm")
+      );
+
+      for (const fileName of ortWasmFiles) {
         writeFileSync(
           resolve(ortTarget, fileName),
           readFileSync(resolve(onnxRuntimeDist, fileName))
@@ -31,12 +32,51 @@ function copyToOutDirPlugin(): Plugin {
       const modelsTarget = resolve(outDir, "models");
       mkdirSync(modelsTarget, { recursive: true });
 
-      for (const fileName of readdirSync(resolve(rootDir, "models"))) {
+      const modelFiles = readdirSync(resolve(rootDir, "models")).filter((fileName) =>
+        statSync(resolve(rootDir, "models", fileName)).isFile()
+      );
+
+      for (const fileName of modelFiles) {
         writeFileSync(
           resolve(modelsTarget, fileName),
           readFileSync(resolve(rootDir, "models", fileName))
         );
       }
+
+      const tessTarget = resolve(outDir, "assets/tess");
+      mkdirSync(tessTarget, { recursive: true });
+
+      const tessDir = resolve(rootDir, "node_modules/tesseract.js-core");
+      const coreVariants = [
+        "tesseract-core-relaxedsimd-lstm.wasm.js",
+        "tesseract-core-relaxedsimd-lstm.wasm",
+        "tesseract-core-simd-lstm.wasm.js",
+        "tesseract-core-simd-lstm.wasm",
+        "tesseract-core-lstm.wasm.js",
+        "tesseract-core-lstm.wasm"
+      ];
+
+      for (const fileName of coreVariants) {
+        writeFileSync(
+          resolve(tessTarget, fileName),
+          readFileSync(resolve(tessDir, fileName))
+        );
+      }
+
+      writeFileSync(
+        resolve(tessTarget, "worker.min.js"),
+        readFileSync(resolve(rootDir, "node_modules/tesseract.js/dist/worker.min.js"))
+      );
+
+      writeFileSync(
+        resolve(tessTarget, "eng.traineddata.gz"),
+        readFileSync(
+          resolve(
+            rootDir,
+            "node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz"
+          )
+        )
+      );
     }
   };
 }
