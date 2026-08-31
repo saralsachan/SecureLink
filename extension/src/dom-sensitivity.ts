@@ -14,6 +14,7 @@ export type ElementNode = {
   ariaLabel: string | null;
   autocomplete: string | null;
   placeholder: string | null;
+  value: string | null;
 };
 
 export type SensitiveClass =

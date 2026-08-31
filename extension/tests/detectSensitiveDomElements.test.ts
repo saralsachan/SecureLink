@@ -15,6 +15,7 @@ function fakeNode(overrides: Partial<ElementNode> & { id: string }): ElementNode
     ariaLabel: null,
     autocomplete: null,
     placeholder: null,
+    value: null,
     ...overrides
   };
 }

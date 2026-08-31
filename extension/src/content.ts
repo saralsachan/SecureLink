@@ -1,4 +1,10 @@
-import type { BoundingBox, ElementNode } from "./dom-sensitivity";
+import {
+  detectSensitiveDomElements,
+  type BoundingBox,
+  type ElementNode,
+  type SensitiveHit
+} from "./dom-sensitivity";
+import { redactStructuralMap } from "./redaction";
 
 type AgentMessage = {
   type: "SECURELINK_ACTIVATE_AGENT";
@@ -195,6 +201,16 @@ function getAriaLabel(element: HTMLElement): string | null {
 function toElementNode(element: HTMLElement): ElementNode {
   const rect = element.getBoundingClientRect();
 
+  let value: string | null = null;
+
+  if (
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement
+  ) {
+    value = element.value || null;
+  }
+
   return {
     id: getSyntheticId(element),
     tag: element.tagName.toLowerCase(),
@@ -208,7 +224,8 @@ function toElementNode(element: HTMLElement): ElementNode {
     inputType: getInputType(element),
     ariaLabel: getAriaLabel(element),
     autocomplete: element.getAttribute("autocomplete"),
-    placeholder: element.getAttribute("placeholder")
+    placeholder: element.getAttribute("placeholder"),
+    value
   };
 }
 
@@ -270,6 +287,14 @@ function executeAction(action: AgentAction): void {
   }
 }
 
+type RedactDebugMessage = { type: "SECURELINK_REDACT_DEBUG" };
+
+type RedactDebugResponse = {
+  structuralMap: ElementNode[];
+  domHits: SensitiveHit[];
+  devicePixelRatio: number;
+};
+
 const secureLinkWindow = window as typeof window & {
   secureLink?: {
     extractStructuralMap: typeof extractStructuralMap;
@@ -286,10 +311,22 @@ secureLinkWindow.secureLink = {
 
 chrome.runtime.onMessage.addListener(
   (
-    message: AgentMessage,
+    message: AgentMessage | RedactDebugMessage,
     _sender: chrome.runtime.MessageSender,
-    sendResponse: (response: AgentActivationResponse) => void
+    sendResponse: (response: AgentActivationResponse | RedactDebugResponse) => void
   ) => {
+    if (message.type === "SECURELINK_REDACT_DEBUG") {
+      const structuralMap = extractStructuralMap();
+      const domHits = detectSensitiveDomElements(structuralMap);
+
+      sendResponse({
+        structuralMap,
+        domHits,
+        devicePixelRatio: window.devicePixelRatio
+      });
+      return true;
+    }
+
     if (message.type !== "SECURELINK_ACTIVATE_AGENT") {
       return false;
     }
@@ -299,10 +336,11 @@ chrome.runtime.onMessage.addListener(
         console.info("SecureLink popup connected on:", document.title);
 
         const structuralMap = extractStructuralMap();
-        console.info("SecureLink extracted structural map:", structuralMap);
+        const domHits = detectSensitiveDomElements(structuralMap);
+        const { redactedMap } = redactStructuralMap(structuralMap, domHits);
 
         const action = await sendToAgent({
-          structural_map: structuralMap,
+          structural_map: redactedMap,
           screenshot_base64: message.screenshotBase64,
           task: message.task ?? "Activate agent"
         });

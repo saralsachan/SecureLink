@@ -1,11 +1,29 @@
 import "./style.css";
 import { getVisionBackend, runVisionModel } from "./vision";
+import { redact, redactStructuralMap } from "./redaction";
+import type { BoundingBox, ElementNode, SensitiveHit } from "./dom-sensitivity";
 
 const activateButton = document.querySelector<HTMLButtonElement>("#activate-agent");
 const visionButton = document.querySelector<HTMLButtonElement>("#vision-self-test");
+const redactionDebugButton = document.querySelector<HTMLButtonElement>(
+  "#redaction-debug"
+);
 const capturePreview =
   document.querySelector<HTMLImageElement>("#capture-preview");
 const statusText = document.querySelector<HTMLParagraphElement>("#status");
+const redactDebugSection = document.querySelector<HTMLElement>("#redact-debug");
+const redactRawCanvas = document.querySelector<HTMLCanvasElement>("#redact-raw");
+const redactRedactedCanvas = document.querySelector<HTMLCanvasElement>(
+  "#redact-redacted"
+);
+const redactKeyList = document.querySelector<HTMLUListElement>("#redact-key-list");
+const redactKeyCount = document.querySelector<HTMLSpanElement>("#redact-key-count");
+
+type RedactDebugResponse = {
+  structuralMap: ElementNode[];
+  domHits: SensitiveHit[];
+  devicePixelRatio: number;
+};
 
 type ActivationRequest = {
   type: "SECURELINK_ACTIVATE_AGENT";
@@ -254,6 +272,142 @@ activateButton?.addEventListener("click", async () => {
       error instanceof Error
         ? `Activation failed: ${error.message}`
         : "Activation failed."
+    );
+  }
+});
+
+function clearRedactDebug() {
+  if (redactKeyList) {
+    redactKeyList.replaceChildren();
+  }
+  if (redactKeyCount) {
+    redactKeyCount.textContent = "0";
+  }
+}
+
+function showRedactDebug(response: RedactDebugResponse) {
+  const { structuralMap, domHits, devicePixelRatio } = response;
+
+  void captureTabToImageData()
+    .then((imageData) => {
+      if (!redactRawCanvas || !redactRedactedCanvas) {
+        throw new Error("Redaction canvases unavailable");
+      }
+
+      redactRawCanvas.width = imageData.width;
+      redactRawCanvas.height = imageData.height;
+      const rawCtx = redactRawCanvas.getContext("2d");
+
+      if (!rawCtx) {
+        throw new Error("2D context unavailable");
+      }
+
+      rawCtx.putImageData(imageData, 0, 0);
+
+      const mapById = new Map(structuralMap.map((n) => [n.id, n]));
+      const hits = domHits.map((hit) => {
+        const node = mapById.get(hit.elementId);
+        const b = node?.bbox ?? { x: 0, y: 0, w: 0, h: 0 };
+
+        return {
+          bbox: {
+            x: b.x * devicePixelRatio,
+            y: b.y * devicePixelRatio,
+            w: b.w * devicePixelRatio,
+            h: b.h * devicePixelRatio
+          },
+          sensitivityClass: hit.sensitivityClass
+        };
+      });
+
+      const redactedCanvas = redact(
+        redactRawCanvas,
+        hits,
+        { method: "black", padding: 4 },
+      );
+
+      redactRedactedCanvas.width = redactedCanvas.width;
+      redactRedactedCanvas.height = redactedCanvas.height;
+      const redCtx = redactRedactedCanvas.getContext("2d");
+
+      if (!redCtx) {
+        throw new Error("2D context unavailable");
+      }
+
+      redCtx.drawImage(redactedCanvas, 0, 0);
+
+      const { redactionKey } = redactStructuralMap(structuralMap, domHits);
+
+      if (redactKeyList) {
+        redactKeyList.replaceChildren();
+
+        for (const [token, value] of redactionKey) {
+          const li = document.createElement("li");
+          const tokenSpan = document.createElement("span");
+          tokenSpan.className = "token";
+          tokenSpan.textContent = token;
+          const valueSpan = document.createElement("span");
+          valueSpan.className = "value";
+          valueSpan.textContent = value;
+          li.append(tokenSpan, valueSpan);
+          redactKeyList.appendChild(li);
+        }
+      }
+
+      if (redactKeyCount) {
+        redactKeyCount.textContent = String(redactionKey.size);
+      }
+
+      if (redactDebugSection) {
+        redactDebugSection.hidden = false;
+      }
+
+      setStatus(
+        `Redaction debug: ${hits.length} hits, ${redactionKey.size} redacted fields`
+      );
+    })
+    .catch((error) => {
+      console.error("SecureLink popup: redaction debug failed.", error);
+      setStatus(
+        error instanceof Error
+          ? `Redaction debug failed: ${error.message}`
+          : "Redaction debug failed."
+      );
+    });
+}
+
+async function sendRedactDebugMessage(tabId: number): Promise<RedactDebugResponse> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, { type: "SECURELINK_REDACT_DEBUG" });
+  } catch {
+    await injectContentScript(tabId);
+    return await chrome.tabs.sendMessage(tabId, { type: "SECURELINK_REDACT_DEBUG" });
+  }
+}
+
+redactionDebugButton?.addEventListener("click", async () => {
+  console.info("SecureLink popup: redaction debug requested.");
+  setStatus("Capturing tab...");
+
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (!tab.id) {
+    console.warn("SecureLink popup: no active tab found.");
+    setStatus("No active tab found.");
+    return;
+  }
+
+  clearRedactDebug();
+
+  try {
+    const response = await sendRedactDebugMessage(tab.id);
+    showRedactDebug(response);
+  } catch (error) {
+    console.error("SecureLink popup: redaction debug failed.", error);
+    setStatus(
+      error instanceof Error
+        ? `Redaction debug failed: ${error.message}`
+        : "Redaction debug failed."
     );
   }
 });

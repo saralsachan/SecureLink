@@ -11,6 +11,23 @@
       <button id="activate-agent" type="button">Activate Agent</button>
       <button id="vision-self-test" type="button">Run vision self-test</button>
       <p id="status" role="status">Ready to connect.</p>
+      <button id="redaction-debug" type="button">Run redaction debug</button>
+      <section id="redact-debug" hidden>
+        <div id="redact-panels">
+          <div class="redact-panel">
+            <h2>Raw</h2>
+            <canvas id="redact-raw" width="640" height="360"></canvas>
+          </div>
+          <div class="redact-panel">
+            <h2>Redacted</h2>
+            <canvas id="redact-redacted" width="640" height="360"></canvas>
+          </div>
+        </div>
+        <div id="redact-key-section">
+          <h3>Redaction key (<span id="redact-key-count">0</span> entries)</h3>
+          <ul id="redact-key-list"></ul>
+        </div>
+      </section>
       <img id="capture-preview" alt="Captured tab preview" hidden />
     </main>
     <script type="module" src="/src/popup.ts"></script>
