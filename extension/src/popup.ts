@@ -1,6 +1,6 @@
 import "./style.css";
 import { getVisionBackend, runVisionModel } from "./vision";
-import { redact, redactStructuralMap } from "./redaction";
+import { redact, redactStructuralMap, selfVerifyRedaction, type OcrPipeline } from "./redaction";
 import type { BoundingBox, ElementNode, SensitiveHit } from "./dom-sensitivity";
 
 const activateButton = document.querySelector<HTMLButtonElement>("#activate-agent");
@@ -289,7 +289,7 @@ function showRedactDebug(response: RedactDebugResponse) {
   const { structuralMap, domHits, devicePixelRatio } = response;
 
   void captureTabToImageData()
-    .then((imageData) => {
+    .then(async (imageData) => {
       if (!redactRawCanvas || !redactRedactedCanvas) {
         throw new Error("Redaction canvases unavailable");
       }
@@ -362,9 +362,26 @@ function showRedactDebug(response: RedactDebugResponse) {
         redactDebugSection.hidden = false;
       }
 
-      setStatus(
-        `Redaction debug: ${hits.length} hits, ${redactionKey.size} redacted fields`
+      const pipeline: OcrPipeline = {
+        runOcr: async () => [],
+        classifyOcrLines: () => [],
+      };
+
+      const verification = await selfVerifyRedaction(
+        redactRawCanvas,
+        hits,
+        pipeline
       );
+
+      if (verification.blocked) {
+        setStatus(
+          "Could not verify this frame is safe to send."
+        );
+      } else {
+        setStatus(
+          `Redaction debug: ${hits.length} hits, ${redactionKey.size} redacted fields`
+        );
+      }
     })
     .catch((error) => {
       console.error("SecureLink popup: redaction debug failed.", error);

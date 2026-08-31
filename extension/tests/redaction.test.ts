@@ -1,8 +1,9 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import type { BoundingBox, SensitiveHit } from "../src/dom-sensitivity";
+import type { BoundingBox, SensitiveHit, VisualSensitivityHit } from "../src/dom-sensitivity";
 import {
   redactStructuralMap,
+  selfVerifyRedaction,
   getRedactionKey,
   type RedactHit
 } from "../src/redaction.ts";
@@ -254,5 +255,84 @@ describe("redact", () => {
     assert.notStrictEqual(result, canvas);
     const srcPixel = ctx.getImageData(10, 20, 1, 1).data;
     assert.equal(srcPixel[1], 255);
+  });
+});
+
+describe("selfVerifyRedaction", () => {
+  function makeHit(): RedactHit {
+    return { bbox: bbox(10, 20, 100, 30), sensitivityClass: "email" };
+  }
+
+  function makeCanvas(): HTMLCanvasElement {
+    const canvas = document.createElement("canvas");
+    canvas.width = 200;
+    canvas.height = 100;
+    return canvas;
+  }
+
+  test("returns safe when pipeline produces no remaining hits", async () => {
+    const canvas = makeCanvas();
+    const pipeline = {
+      runOcr: async () => [],
+      classifyOcrLines: () => [],
+    };
+
+    const result = await selfVerifyRedaction(canvas, [makeHit()], pipeline);
+
+    assert.equal(result.safe, true);
+    assert.equal(result.blocked, false);
+    assert.equal(result.remainingHits.length, 0);
+  });
+
+  test("blocks when failClosed is true and hits remain", async () => {
+    const canvas = makeCanvas();
+    const pipeline = {
+      runOcr: async () => [],
+      classifyOcrLines: () => [
+        {
+          bbox: { x: 0, y: 0, w: 10, h: 10 },
+          sensitivityClass: "email",
+          confidence: 0.9,
+          source: "visual",
+        },
+      ],
+    };
+
+    const result = await selfVerifyRedaction(canvas, [makeHit()], pipeline, {
+      failClosed: true,
+    });
+
+    assert.equal(result.safe, false);
+    assert.equal(result.blocked, true);
+    assert.equal(result.remainingHits.length, 1);
+  });
+
+  test("retries with larger padding when failClosed is false", async () => {
+    const canvas = makeCanvas();
+    let callCount = 0;
+    const pipeline = {
+      runOcr: async () => [],
+      classifyOcrLines: () => {
+        callCount++;
+        if (callCount === 1) {
+          return [
+            {
+              bbox: { x: 0, y: 0, w: 10, h: 10 },
+              sensitivityClass: "email",
+              confidence: 0.9,
+              source: "visual",
+            },
+          ];
+        }
+        return [];
+      },
+    };
+
+    const result = await selfVerifyRedaction(canvas, [makeHit()], pipeline, {
+      failClosed: false,
+    });
+
+    assert.equal(result.safe, true);
+    assert.equal(result.blocked, false);
   });
 });

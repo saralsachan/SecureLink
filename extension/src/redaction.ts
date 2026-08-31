@@ -1,4 +1,10 @@
-import type { BoundingBox, ElementNode, SensitiveHit } from "./dom-sensitivity";
+import type { BoundingBox, ElementNode, SensitiveHit, VisualSensitivityHit } from "./dom-sensitivity";
+import type { OcrLine } from "./pii-detection";
+
+export const FAIL_CLOSED = true;
+export const DEFAULT_REDACTION_PADDING = 4;
+export const REDACTION_PADDING_INCREASE = 10;
+export const MIN_REDACTION_CONFIDENCE = 0.5;
 
 export type RedactOptions = {
   method?: "black" | "blur";
@@ -11,6 +17,85 @@ export type RedactHit = {
   bbox: BoundingBox;
   sensitivityClass: string;
 };
+
+export type OcrPipeline = {
+  runOcr: (canvas: HTMLCanvasElement) => Promise<OcrLine[]>;
+  classifyOcrLines: (lines: OcrLine[]) => VisualSensitivityHit[];
+};
+
+function expandBbox(bbox: BoundingBox, amount: number): BoundingBox {
+  return {
+    x: bbox.x - amount,
+    y: bbox.y - amount,
+    w: bbox.w + 2 * amount,
+    h: bbox.h + 2 * amount,
+  };
+}
+
+function isBoxCovered(inner: BoundingBox, outer: BoundingBox): boolean {
+  return (
+    inner.x >= outer.x &&
+    inner.y >= outer.y &&
+    inner.x + inner.w <= outer.x + outer.w &&
+    inner.y + inner.h <= outer.y + outer.h
+  );
+}
+
+export async function selfVerifyRedaction(
+  originalCanvas: HTMLCanvasElement,
+  hits: RedactHit[],
+  pipeline: OcrPipeline,
+  options?: {
+    failClosed?: boolean;
+    paddingIncrease?: number;
+    minConfidence?: number;
+    createCanvas?: () => HTMLCanvasElement;
+  }
+): Promise<{
+  safe: boolean;
+  blocked: boolean;
+  redactedCanvas: HTMLCanvasElement;
+  remainingHits: VisualSensitivityHit[];
+}> {
+  const failClosed = options?.failClosed ?? FAIL_CLOSED;
+  const paddingIncrease = options?.paddingIncrease ?? REDACTION_PADDING_INCREASE;
+  const minConfidence = options?.minConfidence ?? MIN_REDACTION_CONFIDENCE;
+
+  const doRedact = (padding: number): HTMLCanvasElement => {
+    const expandedHits = hits.map((hit) => ({
+      ...hit,
+      bbox: expandBbox(hit.bbox, padding),
+    }));
+    return redact(originalCanvas, expandedHits, { method: "black", padding: 0, createCanvas: options?.createCanvas });
+  };
+
+  const getRemainingHits = async (canvas: HTMLCanvasElement): Promise<VisualSensitivityHit[]> => {
+    const lines = await pipeline.runOcr(canvas);
+    const piiHits = pipeline.classifyOcrLines(lines);
+    return piiHits.filter((h) => h.confidence >= minConfidence);
+  };
+
+  let redactedCanvas = doRedact(DEFAULT_REDACTION_PADDING);
+  let remaining = await getRemainingHits(redactedCanvas);
+
+  if (remaining.length === 0) {
+    return { safe: true, blocked: false, redactedCanvas, remainingHits: [] };
+  }
+
+  if (failClosed) {
+    return { safe: false, blocked: true, redactedCanvas, remainingHits: remaining };
+  }
+
+  redactedCanvas = doRedact(DEFAULT_REDACTION_PADDING + paddingIncrease);
+  remaining = await getRemainingHits(redactedCanvas);
+
+  return {
+    safe: remaining.length === 0,
+    blocked: false,
+    redactedCanvas,
+    remainingHits: remaining,
+  };
+}
 
 const redactionKey = new Map<string, string>();
 const nextIndex = new Map<string, number>();
@@ -29,12 +114,19 @@ export function redactStructuralMap(
   const redactedMap = map.map((node) => ({ ...node }));
   const nodeById = new Map(redactedMap.map((n) => [n.id, n]));
 
+  const seen = new Set<string>();
   for (const hit of domHits) {
     const node = nodeById.get(hit.elementId);
 
     if (!node) {
       continue;
     }
+
+    const dedupKey = `${hit.elementId}:${hit.sensitivityClass}`;
+    if (seen.has(dedupKey)) {
+      continue;
+    }
+    seen.add(dedupKey);
 
     const cls = hit.sensitivityClass;
     const count = (nextIndex.get(cls) ?? 0) + 1;
