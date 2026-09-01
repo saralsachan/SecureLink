@@ -79,36 +79,88 @@ async function captureVisibleTab(): Promise<{
   };
 }
 
+interface TabInfo {
+  url?: string;
+}
+
+async function isScriptableTab(tab: TabInfo | null): Promise<boolean> {
+  const url = tab?.url ?? "";
+
+  if (
+    url.startsWith("chrome://") ||
+    url.startsWith("chrome-extension://") ||
+    url.startsWith("edge://") ||
+    url.startsWith("about:") ||
+    url.startsWith("devtools://") ||
+    url.startsWith("brave://") ||
+    url === ""
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 async function injectContentScript(tabId: number): Promise<void> {
   console.info("SecureLink popup: injecting content script into tab.", tabId);
-
   await chrome.scripting.executeScript({
     target: { tabId },
     files: ["assets/content.js"]
   });
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function trySend<T>(tabId: number, message: unknown): Promise<T> {
+  return chrome.tabs.sendMessage<typeof message, T>(tabId, message);
+}
+
 async function sendActivationMessage(
   tabId: number,
+  tab: TabInfo | null,
   message: ActivationRequest
 ): Promise<ActivationResponse> {
-  try {
-    return await chrome.tabs.sendMessage<ActivationRequest, ActivationResponse>(
-      tabId,
-      message
-    );
-  } catch (error) {
-    console.warn(
-      "SecureLink popup: content script was unavailable, injecting and retrying.",
-      error
-    );
-
-    await injectContentScript(tabId);
-    return chrome.tabs.sendMessage<ActivationRequest, ActivationResponse>(
-      tabId,
-      message
+  if (!(await isScriptableTab(tab))) {
+    throw new Error(
+      "SecureLink can\u2019t run on this page. Try a normal website tab " +
+        "(browser-internal pages like the new-tab, edge://, chrome:// or the " +
+        "Web Store can\u2019t host content scripts)."
     );
   }
+
+  const attempts = [(): Promise<ActivationResponse> => trySend(tabId, message)];
+
+  // First failure: the page may not have the content script yet (e.g. loaded
+  // before the extension). Inject it, then retry once the listener is up.
+  const injectAndRetry = async (): Promise<ActivationResponse> => {
+    await injectContentScript(tabId);
+    await delay(50);
+    return trySend(tabId, message);
+  };
+  attempts.push(injectAndRetry);
+
+  let lastError: unknown;
+
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch (error) {
+      lastError = error;
+      console.warn(
+        "SecureLink popup: message to tab failed, will retry.",
+        error
+      );
+    }
+  }
+
+  throw lastError instanceof Error
+    ? new Error(
+        "Could not reach the page\u2019s content script. " +
+          `(${lastError.message})`
+      )
+    : new Error("Could not reach the page\u2019s content script.");
 }
 
 async function captureTabToImageData(): Promise<ImageData> {
@@ -254,7 +306,7 @@ activateButton?.addEventListener("click", async () => {
 
     setStatus("Sending page context...");
     console.info("SecureLink popup: sending activation message to tab.", tab.id);
-    const response = await sendActivationMessage(tab.id, {
+    const response = await sendActivationMessage(tab.id, tab, {
       type: "SECURELINK_ACTIVATE_AGENT",
       screenshotBase64: screenshot.screenshotBase64,
       task
@@ -393,13 +445,40 @@ function showRedactDebug(response: RedactDebugResponse) {
     });
 }
 
-async function sendRedactDebugMessage(tabId: number): Promise<RedactDebugResponse> {
-  try {
-    return await chrome.tabs.sendMessage(tabId, { type: "SECURELINK_REDACT_DEBUG" });
-  } catch {
-    await injectContentScript(tabId);
-    return await chrome.tabs.sendMessage(tabId, { type: "SECURELINK_REDACT_DEBUG" });
+async function sendRedactDebugMessage(
+  tabId: number,
+  tab: TabInfo | null
+): Promise<RedactDebugResponse> {
+  if (!(await isScriptableTab(tab))) {
+    throw new Error(
+      "SecureLink can\u2019t run on this page. Try a normal website tab."
+    );
   }
+
+  const attempts = [
+    (): Promise<RedactDebugResponse> =>
+      trySend(tabId, { type: "SECURELINK_REDACT_DEBUG" }),
+    async (): Promise<RedactDebugResponse> => {
+      await injectContentScript(tabId);
+      await delay(50);
+      return trySend(tabId, { type: "SECURELINK_REDACT_DEBUG" });
+    }
+  ];
+
+  let lastError: unknown;
+
+  for (const attempt of attempts) {
+    try {
+      return await attempt();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(
+    "Could not reach the page\u2019s content script. " +
+      (lastError instanceof Error ? `(${lastError.message})` : "")
+  );
 }
 
 redactionDebugButton?.addEventListener("click", async () => {
@@ -417,7 +496,7 @@ redactionDebugButton?.addEventListener("click", async () => {
   clearRedactDebug();
 
   try {
-    const response = await sendRedactDebugMessage(tab.id);
+    const response = await sendRedactDebugMessage(tab.id, tab);
     showRedactDebug(response);
   } catch (error) {
     console.error("SecureLink popup: redaction debug failed.", error);
