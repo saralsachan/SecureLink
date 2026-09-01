@@ -20,9 +20,17 @@ class VisionBackend(ABC):
 
     @abstractmethod
     async def describe_image(
-        self, image_b64: str, prompt: str = "Describe this image."
+        self,
+        image_b64: str,
+        prompt: str = "Describe this image.",
+        messages: list[dict] | None = None,
     ) -> DescribeResult:
-        """Send a base-64-encoded image + prompt to the model."""
+        """Send a base-64-encoded image + prompt to the model.
+
+        If ``messages`` is supplied it is a list of ``{"role", "content"}`` dicts
+        (e.g. a system + user pair) and takes precedence over ``prompt``. The
+        image is attached to the final user message.
+        """
         ...
 
     @abstractmethod

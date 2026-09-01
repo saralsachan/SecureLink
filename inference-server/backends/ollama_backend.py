@@ -19,18 +19,40 @@ class OllamaBackend(VisionBackend):
         self._model = os.getenv("OLLAMA_MODEL", DEFAULT_MODEL)
 
     async def describe_image(
-        self, image_b64: str, prompt: str = "Describe this image."
+        self,
+        image_b64: str,
+        prompt: str = "Describe this image.",
+        messages: list[dict] | None = None,
     ) -> DescribeResult:
         url = f"{self._base_url}/api/chat"
-        payload = {
-            "model": self._model,
-            "messages": [
+
+        if messages:
+            out_messages: list[dict] = []
+            for msg in messages:
+                if msg.get("role") == "user":
+                    out_messages.append(
+                        {
+                            "role": "user",
+                            "content": msg.get("content", ""),
+                            "images": [image_b64],
+                        }
+                    )
+                else:
+                    out_messages.append(
+                        {"role": "system", "content": msg.get("content", "")}
+                    )
+        else:
+            out_messages = [
                 {
                     "role": "user",
                     "content": prompt,
                     "images": [image_b64],
                 }
-            ],
+            ]
+
+        payload = {
+            "model": self._model,
+            "messages": out_messages,
             "stream": False,
         }
 

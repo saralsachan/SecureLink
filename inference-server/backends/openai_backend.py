@@ -19,25 +19,47 @@ class OpenAIBackend(VisionBackend):
         self._client = AsyncOpenAI(api_key=api_key, base_url=api_base)
 
     async def describe_image(
-        self, image_b64: str, prompt: str = "Describe this image."
+        self,
+        image_b64: str,
+        prompt: str = "Describe this image.",
+        messages: list[dict] | None = None,
     ) -> DescribeResult:
         data_url = f"data:image/png;base64,{image_b64}"
 
-        t0 = time.perf_counter()
-        response = await self._client.chat.completions.create(
-            model=self._model,
-            messages=[
+        if messages:
+            # Messages may include a leading system role; attach the image to the
+            # last user message.
+            out_messages: list[dict] = []
+            for msg in messages:
+                if msg.get("role") == "user":
+                    out_messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": msg.get("content", "")},
+                                {"type": "image_url", "image_url": {"url": data_url}},
+                            ],
+                        }
+                    )
+                else:
+                    out_messages.append(
+                        {"role": "system", "content": msg.get("content", "")}
+                    )
+        else:
+            out_messages = [
                 {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        },
+                        {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 }
-            ],
+            ]
+
+        t0 = time.perf_counter()
+        response = await self._client.chat.completions.create(
+            model=self._model,
+            messages=out_messages,
             max_tokens=512,
         )
         latency = (time.perf_counter() - t0) * 1000

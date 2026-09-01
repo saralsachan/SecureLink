@@ -12,6 +12,34 @@ from PIL import Image
 from privacy_firewall import privacy_firewall
 
 
+@pytest.fixture()
+def analyze_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """TestClient whose backend returns valid STRICT-JSON action output."""
+    import json as _json
+
+    from backends.base import DescribeResult
+    import server as srv
+
+    class ActionBackend:
+        async def describe_image(self, image_b64, prompt="", messages=None):
+            action = {
+                "action": "click",
+                "target_id": "submit-btn",
+                "value": None,
+                "reasoning": "Identified submit button from structural map.",
+            }
+            return DescribeResult(
+                text=_json.dumps(action), backend="mock", model="mock-1.0", latency_ms=1.2
+            )
+
+        def health(self):
+            return {"backend": "mock", "model": "mock-1.0"}
+
+    monkeypatch.setattr(srv, "_backend", ActionBackend())
+    monkeypatch.setattr(srv, "_current_backend", lambda: srv._backend)
+    return TestClient(srv.app)
+
+
 def _solid_png_b64(size: tuple[int, int] = (8, 8), color: tuple[int, int, int] = (200, 200, 200)) -> str:
     img = Image.new("RGB", size, color)
     buf = BytesIO()
@@ -34,13 +62,15 @@ def _clean_map() -> list[dict]:
     ]
 
 
-def test_analyze_clean_payload_returns_200(client: TestClient) -> None:
-    resp = client.post("/analyze", json=_payload(_clean_map()))
+def test_analyze_clean_payload_returns_200(analyze_client: TestClient) -> None:
+    resp = analyze_client.post("/analyze", json=_payload(_clean_map()))
     assert resp.status_code == 200
     body = resp.json()
     assert body["blocked"] is False
     assert body["backend"] == "mock"
-    assert "Mock sees" in body["text"]
+    assert body["action"] == "click"
+    assert body["target_id"] == "submit-btn"
+    assert body["validation_failures"] == 0
 
 
 def test_analyze_leaky_email_returns_400(client: TestClient) -> None:
@@ -74,7 +104,7 @@ def test_analyze_face_leak_returns_400(client: TestClient, monkeypatch: pytest.M
     assert resp.json()["detail"]["reason"] == "face_detected"
 
 
-def test_analyze_clean_after_real_firewall_via_mock_backend(client: TestClient) -> None:
+def test_analyze_clean_after_real_firewall_via_mock_backend(analyze_client: TestClient) -> None:
     """End-to-end through the real firewall on a benign payload."""
     payload = _payload([{"id": "a", "tag": "input", "value": "", "placeholder": "Search"}])
     ok, reason = privacy_firewall(
@@ -82,5 +112,73 @@ def test_analyze_clean_after_real_firewall_via_mock_backend(client: TestClient) 
     )
     assert ok is True
     assert reason is None
-    resp = client.post("/analyze", json=payload)
+    resp = analyze_client.post("/analyze", json=payload)
     assert resp.status_code == 200
+
+
+def test_analyze_retries_on_invalid_output(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid first reply is corrected on retry; validation_failures is tracked."""
+    import json as _json
+
+    from backends.base import DescribeResult
+
+    responses = iter(
+        [
+            DescribeResult(text="not json at all", backend="mock", model="mock-1.0", latency_ms=1.0),
+            DescribeResult(
+                text=_json.dumps(
+                    {"action": "click", "target_id": "submit-btn", "value": None, "reasoning": "fixed"}
+                ),
+                backend="mock",
+                model="mock-1.0",
+                latency_ms=1.0,
+            ),
+        ]
+    )
+
+    class RetryBackend:
+        async def describe_image(self, image_b64, prompt="", messages=None):
+            return next(responses)
+
+        def health(self):
+            return {"backend": "mock", "model": "mock-1.0"}
+
+    import server as srv
+
+    monkeypatch.setattr(srv, "_backend", RetryBackend())
+    monkeypatch.setattr(srv, "_current_backend", lambda: srv._backend)
+
+    resp = client.post("/analyze", json=_payload(_clean_map()))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] == "click"
+    assert body["target_id"] == "submit-btn"
+    assert body["validation_failures"] == 1
+
+
+def test_analyze_reports_failure_after_exhausting_retries(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persistently invalid replies exhaust retries and surface as null action."""
+    from backends.base import DescribeResult
+
+    bad = DescribeResult(text="still not json", backend="mock", model="mock-1.0", latency_ms=1.0)
+
+    class AlwaysBadBackend:
+        async def describe_image(self, image_b64, prompt="", messages=None):
+            return bad
+
+        def health(self):
+            return {"backend": "mock", "model": "mock-1.0"}
+
+    import server as srv
+
+    monkeypatch.setattr(srv, "_backend", AlwaysBadBackend())
+    monkeypatch.setattr(srv, "_current_backend", lambda: srv._backend)
+
+    resp = client.post("/analyze", json=_payload(_clean_map()))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["action"] is None
+    assert body["target_id"] is None
+    assert body["validation_failures"] == 3  # MAX_RETRIES=2 → 3 attempts, all fail

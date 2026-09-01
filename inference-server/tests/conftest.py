@@ -13,7 +13,12 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     import server as srv
 
     class MockBackend(VisionBackend):
-        async def describe_image(self, image_b64: str, prompt: str = "Describe this image.") -> DescribeResult:
+        async def describe_image(
+            self,
+            image_b64: str,
+            prompt: str = "Describe this image.",
+            messages: list[dict] | None = None,
+        ) -> DescribeResult:
             return DescribeResult(
                 text=f"Mock sees a {len(image_b64)}-char image.",
                 backend="mock",

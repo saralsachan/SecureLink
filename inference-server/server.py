@@ -55,6 +55,71 @@ def _run_firewall(payload: dict) -> tuple[bool, str | None]:
         _firewall_run = privacy_firewall
     return _firewall_run(payload)
 
+
+# ── Prompted analysis (system+user prompt + strict-JSON validation) ─────────
+
+MAX_ANALYZE_RETRIES = 2
+_prompt_builder = None  # deferred import so tests can monkeypatch
+
+
+def _prompts():
+    global _prompt_builder
+    if _prompt_builder is None:
+        from prompt_builder import (
+            build_correction_prompt,
+            build_prompt,
+            validate_action_output,
+        )
+
+        _prompt_builder = (build_prompt, build_correction_prompt, validate_action_output)
+    return _prompt_builder
+
+
+async def _analyze_with_retry(
+    backend: VisionBackend,
+    screenshot_b64: str,
+    structural_map_json: str,
+    task: str,
+) -> tuple[str, dict | None, int]:
+    """
+    Run a prompted analysis with strict-JSON validation and retry-with-correction.
+
+    Returns (accepted_text, parsed_action_or_None, validation_failures, backend, model).
+    """
+    build_prompt, build_correction, validate = _prompts()
+    system, user = build_prompt(screenshot_b64, structural_map_json, task)
+
+    messages: list[dict] = [{"role": "system", "content": system}]
+    validation_failures = 0
+    accepted_text = ""
+    backend_name = ""
+    model_name = ""
+
+    for attempt in range(MAX_ANALYZE_RETRIES + 1):
+        turn_messages = messages + [{"role": "user", "content": user}]
+        result = await backend.describe_image(
+            screenshot_b64, messages=turn_messages
+        )
+        accepted_text = result.text
+        backend_name = result.backend
+        model_name = result.model
+
+        ok, parsed, error = validate(accepted_text)
+        if ok:
+            return accepted_text, parsed, validation_failures, backend_name, model_name
+
+        validation_failures += 1
+        if attempt >= MAX_ANALYZE_RETRIES:
+            break
+        # Append a retry-with-correction turn so the model can fix its output.
+        messages.append({"role": "user", "content": user})
+        correction = build_correction(accepted_text, error)
+        messages.append({"role": "assistant", "content": accepted_text})
+        user = correction
+
+    # Ran out of retries with no valid parse.
+    return accepted_text, None, validation_failures, backend_name, model_name
+
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
@@ -118,6 +183,11 @@ class AnalyzeResponse(BaseModel):
     text: str | None = None
     backend: str | None = None
     model: str | None = None
+    action: str | None = None
+    target_id: str | None = None
+    value: str | None = None
+    reasoning: str | None = None
+    validation_failures: int = 0
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -174,10 +244,11 @@ async def describe(req: DescribeRequest) -> DescribeResponse:
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
-    """Analyze a screenshot + structural map, guarded by the privacy firewall."""
+    """Analyze a screenshot + anonymized structural map, guarded by the firewall."""
+    screenshot_b64 = _normalise_b64(req.screenshot_base64)
     payload = {
-        "structural_map": [el.model_dump() for el in req.structural_map],
-        "screenshot_base64": _normalise_b64(req.screenshot_base64),
+        "structural_map": [el.model_dump(exclude_none=True) for el in req.structural_map],
+        "screenshot_base64": screenshot_b64,
     }
 
     ok, reason = _run_firewall(payload)
@@ -192,12 +263,24 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
             },
         )
 
-    result = await _current_backend().describe_image(
-        _normalise_b64(req.screenshot_base64), req.prompt
+    import json as _json
+
+    structural_map_json = _json.dumps(
+        [el.model_dump(exclude_none=True) for el in req.structural_map]
     )
+
+    accepted_text, parsed, failures, backend_name, model_name = await _analyze_with_retry(
+        _current_backend(), screenshot_b64, structural_map_json, req.prompt
+    )
+
     return AnalyzeResponse(
         blocked=False,
-        text=result.text,
-        backend=result.backend,
-        model=result.model,
+        text=accepted_text,
+        backend=backend_name or None,
+        model=model_name or None,
+        action=(parsed or {}).get("action"),
+        target_id=(parsed or {}).get("target_id"),
+        value=(parsed or {}).get("value"),
+        reasoning=(parsed or {}).get("reasoning"),
+        validation_failures=failures,
     )
