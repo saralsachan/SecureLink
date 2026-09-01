@@ -1,5 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { createCanvas } from "@napi-rs/canvas";
 import type { BoundingBox, SensitiveHit, VisualSensitivityHit } from "../src/dom-sensitivity";
 import {
   redactStructuralMap,
@@ -8,6 +9,42 @@ import {
   type RedactHit
 } from "../src/redaction.ts";
 import { redact } from "../src/redaction.ts";
+
+function makeCanvas(width = 200, height = 100): HTMLCanvasElement {
+  return createCanvas(width, height) as unknown as HTMLCanvasElement;
+}
+
+function canvasSupportsFilterDrawImage(): boolean {
+  try {
+    const c = createCanvas(200, 100);
+    const ctx = c.getContext("2d");
+    if (!ctx) {
+      return false;
+    }
+    ctx.fillStyle = "#ff0000";
+    ctx.fillRect(0, 0, 200, 100);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(16, 20);
+    ctx.lineTo(104, 20);
+    ctx.arcTo(110, 20, 110, 50, 6);
+    ctx.lineTo(110, 44);
+    ctx.arcTo(110, 50, 104, 50, 6);
+    ctx.lineTo(16, 50);
+    ctx.arcTo(10, 50, 10, 44, 6);
+    ctx.lineTo(10, 26);
+    ctx.arcTo(10, 20, 16, 20, 6);
+    ctx.closePath();
+    ctx.clip();
+    ctx.filter = "blur(8px)";
+    ctx.drawImage(c, 0, 0);
+    ctx.restore();
+    const pixel = ctx.getImageData(15, 25, 1, 1).data;
+    return pixel[0] > 0 && pixel[0] < 255;
+  } catch {
+    return false;
+  }
+}
 
 function bbox(x: number, y: number, w: number, h: number): BoundingBox {
   return { x, y, w, h };
@@ -141,10 +178,10 @@ describe("redactStructuralMap", () => {
 });
 
 describe("redact", () => {
+  const canvasFactory = (() => createCanvas(1, 1)) as unknown as () => HTMLCanvasElement;
+
   test("draws a solid black box over each hit bbox", () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 200;
-    canvas.height = 100;
+    const canvas = makeCanvas();
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       throw new Error("2D context unavailable");
@@ -152,7 +189,7 @@ describe("redact", () => {
     ctx.fillStyle = "#ff0000";
     ctx.fillRect(0, 0, 200, 100);
 
-    const result = redact(canvas, [hit("x", "face")], { method: "black", padding: 0 });
+    const result = redact(canvas, [hit("x", "face")], { method: "black", padding: 0, createCanvas: canvasFactory });
     const rctx = result.getContext("2d");
     if (!rctx) {
       throw new Error("2D context unavailable");
@@ -165,9 +202,7 @@ describe("redact", () => {
   });
 
   test("applies padding around the bbox", () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 200;
-    canvas.height = 100;
+    const canvas = makeCanvas();
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       throw new Error("2D context unavailable");
@@ -175,7 +210,7 @@ describe("redact", () => {
     ctx.fillStyle = "#ff0000";
     ctx.fillRect(0, 0, 200, 100);
 
-    const result = redact(canvas, [hit("x", "face")], { method: "black", padding: 5 });
+    const result = redact(canvas, [hit("x", "face")], { method: "black", padding: 5, createCanvas: canvasFactory });
     const rctx = result.getContext("2d");
     if (!rctx) {
       throw new Error("2D context unavailable");
@@ -188,34 +223,34 @@ describe("redact", () => {
     assert.equal(outside[0], 255);
   });
 
-  test("applies a gaussian blur when method is blur", () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 200;
-    canvas.height = 100;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("2D context unavailable");
-    }
-    ctx.fillStyle = "#ff0000";
-    ctx.fillRect(0, 0, 200, 100);
+  test(
+    "applies a gaussian blur when method is blur",
+    { skip: !canvasSupportsFilterDrawImage() && "canvas lacks drawImage blur filter support" },
+    () => {
+      const canvas = makeCanvas();
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("2D context unavailable");
+      }
+      ctx.fillStyle = "#ff0000";
+      ctx.fillRect(0, 0, 200, 100);
 
-    const result = redact(canvas, [hit("x", "face")], { method: "blur", padding: 0, blurRadius: 8 });
-    const rctx = result.getContext("2d");
-    if (!rctx) {
-      throw new Error("2D context unavailable");
-    }
-    const pixel = rctx.getImageData(15, 25, 1, 1).data;
+      const result = redact(canvas, [hit("x", "face")], { method: "blur", padding: 0, blurRadius: 8, createCanvas: canvasFactory });
+      const rctx = result.getContext("2d");
+      if (!rctx) {
+        throw new Error("2D context unavailable");
+      }
+      const pixel = rctx.getImageData(15, 25, 1, 1).data;
 
-    assert.ok(
-      pixel[0] > 0 && pixel[0] < 255,
-      "blurred pixel should be a blend, got " + pixel[0]
-    );
-  });
+      assert.ok(
+        pixel[0] > 0 && pixel[0] < 255,
+        "blurred pixel should be a blend, got " + pixel[0]
+      );
+    }
+  );
 
   test("skips zero-area hits", () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 200;
-    canvas.height = 100;
+    const canvas = makeCanvas();
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       throw new Error("2D context unavailable");
@@ -225,7 +260,8 @@ describe("redact", () => {
 
     const result = redact(canvas, [{ bbox: { x: 10, y: 20, w: 0, h: 0 }, sensitivityClass: "face" }], {
       method: "black",
-      padding: 0
+      padding: 0,
+      createCanvas: canvasFactory
     });
 
     const rctx = result.getContext("2d");
@@ -238,9 +274,7 @@ describe("redact", () => {
   });
 
   test("returns a new canvas without mutating the source", () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 200;
-    canvas.height = 100;
+    const canvas = makeCanvas();
     const ctx = canvas.getContext("2d");
     if (!ctx) {
       throw new Error("2D context unavailable");
@@ -248,7 +282,7 @@ describe("redact", () => {
     ctx.fillStyle = "#00ff00";
     ctx.fillRect(0, 0, 200, 100);
 
-    const result = redact(canvas, [hit("x", "face")], { method: "black" });
+    const result = redact(canvas, [hit("x", "face")], { method: "black", createCanvas: canvasFactory });
 
     assert.equal(result.width, 200);
     assert.equal(result.height, 100);
@@ -259,25 +293,31 @@ describe("redact", () => {
 });
 
 describe("selfVerifyRedaction", () => {
+  const canvasFactory = (() => createCanvas(1, 1)) as unknown as () => HTMLCanvasElement;
+
   function makeHit(): RedactHit {
     return { bbox: bbox(10, 20, 100, 30), sensitivityClass: "email" };
   }
 
-  function makeCanvas(): HTMLCanvasElement {
-    const canvas = document.createElement("canvas");
-    canvas.width = 200;
-    canvas.height = 100;
-    return canvas;
+  function remainingHit(): VisualSensitivityHit {
+    return {
+      bbox: { x: 0, y: 0, w: 10, h: 10 },
+      sensitivityClass: "email",
+      confidence: 0.9,
+      source: "visual",
+    };
   }
 
   test("returns safe when pipeline produces no remaining hits", async () => {
     const canvas = makeCanvas();
     const pipeline = {
       runOcr: async () => [],
-      classifyOcrLines: () => [],
+      classifyOcrLines: () => [] as VisualSensitivityHit[],
     };
 
-    const result = await selfVerifyRedaction(canvas, [makeHit()], pipeline);
+    const result = await selfVerifyRedaction(canvas, [makeHit()], pipeline, {
+      createCanvas: canvasFactory,
+    });
 
     assert.equal(result.safe, true);
     assert.equal(result.blocked, false);
@@ -288,18 +328,12 @@ describe("selfVerifyRedaction", () => {
     const canvas = makeCanvas();
     const pipeline = {
       runOcr: async () => [],
-      classifyOcrLines: () => [
-        {
-          bbox: { x: 0, y: 0, w: 10, h: 10 },
-          sensitivityClass: "email",
-          confidence: 0.9,
-          source: "visual",
-        },
-      ],
+      classifyOcrLines: () => [remainingHit()],
     };
 
     const result = await selfVerifyRedaction(canvas, [makeHit()], pipeline, {
       failClosed: true,
+      createCanvas: canvasFactory,
     });
 
     assert.equal(result.safe, false);
@@ -314,22 +348,13 @@ describe("selfVerifyRedaction", () => {
       runOcr: async () => [],
       classifyOcrLines: () => {
         callCount++;
-        if (callCount === 1) {
-          return [
-            {
-              bbox: { x: 0, y: 0, w: 10, h: 10 },
-              sensitivityClass: "email",
-              confidence: 0.9,
-              source: "visual",
-            },
-          ];
-        }
-        return [];
+        return callCount === 1 ? [remainingHit()] : [];
       },
     };
 
     const result = await selfVerifyRedaction(canvas, [makeHit()], pipeline, {
       failClosed: false,
+      createCanvas: canvasFactory,
     });
 
     assert.equal(result.safe, true);
