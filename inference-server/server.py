@@ -35,6 +35,7 @@ from backends import get_backend
 from backends.base import VisionBackend
 
 _backend: VisionBackend | None = None
+_firewall_run = None  # deferred import so tests can monkeypatch
 
 
 def _current_backend() -> VisionBackend:
@@ -43,6 +44,16 @@ def _current_backend() -> VisionBackend:
     if _backend is None:
         _backend = get_backend(BACKEND_CHOICE)
     return _backend
+
+
+def _run_firewall(payload: dict) -> tuple[bool, str | None]:
+    """Run the privacy firewall, importing the module lazily so tests can stub it."""
+    global _firewall_run
+    if _firewall_run is None:
+        from privacy_firewall import privacy_firewall
+
+        _firewall_run = privacy_firewall
+    return _firewall_run(payload)
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
 
@@ -76,6 +87,37 @@ class HealthResponse(BaseModel):
     status: str
     backend: str
     active_model: str
+
+
+class StructuralElement(BaseModel):
+    id: str
+    tag: str = "input"
+    role: str | None = None
+    value: str | None = None
+    placeholder: str | None = None
+    aria_label: str | None = None
+    ariaLabel: str | None = None
+    input_type: str | None = None
+    autocomplete: str | None = None
+
+
+class AnalyzeRequest(BaseModel):
+    screenshot_base64: str = Field(
+        ..., description="Base-64 screenshot (no data: prefix)"
+    )
+    structural_map: list[StructuralElement] = Field(
+        default_factory=list,
+        description="DOM structural map extracted by the extension",
+    )
+    prompt: str = "Describe this screenshot."
+
+
+class AnalyzeResponse(BaseModel):
+    blocked: bool
+    reason: str | None = None
+    text: str | None = None
+    backend: str | None = None
+    model: str | None = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -127,4 +169,35 @@ async def describe(req: DescribeRequest) -> DescribeResponse:
         backend=result.backend,
         model=result.model,
         latency_ms=result.latency_ms,
+    )
+
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
+    """Analyze a screenshot + structural map, guarded by the privacy firewall."""
+    payload = {
+        "structural_map": [el.model_dump() for el in req.structural_map],
+        "screenshot_base64": _normalise_b64(req.screenshot_base64),
+    }
+
+    ok, reason = _run_firewall(payload)
+    if not ok:
+        # reason is a sanitised category, never the leaked value.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "blocked": True,
+                "reason": reason or "privacy_violation",
+                "message": "Request blocked by the privacy firewall.",
+            },
+        )
+
+    result = await _current_backend().describe_image(
+        _normalise_b64(req.screenshot_base64), req.prompt
+    )
+    return AnalyzeResponse(
+        blocked=False,
+        text=result.text,
+        backend=result.backend,
+        model=result.model,
     )
