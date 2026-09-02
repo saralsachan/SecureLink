@@ -36,6 +36,7 @@ ACTION_SCHEMA: dict[str, Any] = {
         "target_id": {"type": ["string", "null"]},
         "value": {"type": ["string", "null"]},
         "reasoning": {"type": "string"},
+        "requires_confirmation": {"type": "boolean"},
     },
     "additionalProperties": False,
 }
@@ -64,14 +65,23 @@ match this schema exactly:
   "action": "click|type|scroll|navigate",
   "target_id": "string|null",
   "value": "string|null",
-  "reasoning": "string"
+  "reasoning": "string",
+  "requires_confirmation": "boolean (optional)"
 }}
 
 where:
   - "action": one of click, type, scroll, navigate
   - "target_id": the element id to act on, or null
-  - "value": text to type (for "type") or scroll direction/navigate target; else null
+  - "value":
+      - for "type": the text to type into the target field
+        (may be a [REDACTED_*] token referencing a previously redacted value)
+      - for "navigate": the destination URL
+      - for "scroll": scroll direction ("up" | "down")
+      - for "click": null
   - "reasoning": a short justification citing the element id(s) you used
+  - "requires_confirmation": optional; set true only for high-impact or \
+irreversible actions that should prompt the user first (e.g. destructive \
+submits, navigation away with unsaved changes)
 """
 
 _USER_TEMPLATE = """\
@@ -233,7 +243,8 @@ Fix the reply so it is a single STRICT JSON object matching EXACTLY this schema:
   "action": "click|type|scroll|navigate",
   "target_id": "string|null",
   "value": "string|null",
-  "reasoning": "string"
+  "reasoning": "string",
+  "requires_confirmation": "boolean (optional)"
 }}
 
 Return ONLY the corrected JSON object. No prose, no fences."""

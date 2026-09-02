@@ -104,6 +104,25 @@ export function getRedactionKey(): ReadonlyMap<string, string> {
   return redactionKey;
 }
 
+const REDACTED_TOKEN_RE = /\[REDACTED_[A-Z0-9_]+(?:_\d+)?\]/g;
+
+/**
+ * Resolve every `[REDACTED_*]` token in *value* to its real value using the
+ * local redaction key. Tokens with no matching entry are left untouched.
+ */
+export function resolveTokens(
+  value: string,
+  redactionKey?: ReadonlyMap<string, string> | null
+): string {
+  if (!redactionKey || redactionKey.size === 0) {
+    return value;
+  }
+  return value.replace(
+    REDACTED_TOKEN_RE,
+    (token) => redactionKey.get(token) ?? token
+  );
+}
+
 export function redactStructuralMap(
   map: ElementNode[],
   domHits: SensitiveHit[]

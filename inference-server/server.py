@@ -211,6 +211,7 @@ class AnalyzeResponse(BaseModel):
     target_id: str | None = None
     value: str | None = None
     reasoning: str | None = None
+    requires_confirmation: bool | None = None
     validation_failures: int = 0
 
 
@@ -309,5 +310,6 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
         target_id=(parsed or {}).get("target_id"),
         value=(parsed or {}).get("value"),
         reasoning=(parsed or {}).get("reasoning"),
+        requires_confirmation=(parsed or {}).get("requires_confirmation"),
         validation_failures=failures,
     )

@@ -6,6 +6,7 @@ import {
   redactStructuralMap,
   selfVerifyRedaction,
   getRedactionKey,
+  resolveTokens,
   type RedactHit
 } from "../src/redaction.ts";
 import { redact } from "../src/redaction.ts";
@@ -359,5 +360,33 @@ describe("selfVerifyRedaction", () => {
 
     assert.equal(result.safe, true);
     assert.equal(result.blocked, false);
+  });
+});
+
+describe("resolveTokens", () => {
+  test("leaves plain text untouched", () => {
+    assert.equal(resolveTokens("hello world", new Map()), "hello world");
+  });
+
+  test("resolves a known REDACTED token back to the real value", () => {
+    const key = new Map([["[REDACTED_EMAIL_1]", "alice@example.com"]]);
+    assert.equal(resolveTokens("[REDACTED_EMAIL_1]", key), "alice@example.com");
+  });
+
+  test("resolves a token embedded in a longer string", () => {
+    const key = new Map([["[REDACTED_SSN_2]", "123-45-6789"]]);
+    assert.equal(
+      resolveTokens("my SSN is [REDACTED_SSN_2].", key),
+      "my SSN is 123-45-6789."
+    );
+  });
+
+  test("leaves an unknown token as-is", () => {
+    const key = new Map([["[REDACTED_EMAIL_1]", "a@b.co"]]);
+    assert.equal(resolveTokens("[REDACTED_PHONE_9]", key), "[REDACTED_PHONE_9]");
+  });
+
+  test("returns input unchanged when no key is provided", () => {
+    assert.equal(resolveTokens("[REDACTED_EMAIL_1]"), "[REDACTED_EMAIL_1]");
   });
 });

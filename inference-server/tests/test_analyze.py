@@ -27,6 +27,7 @@ def analyze_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
                 "target_id": "submit-btn",
                 "value": None,
                 "reasoning": "Identified submit button from structural map.",
+                "requires_confirmation": True,
             }
             return DescribeResult(
                 text=_json.dumps(action), backend="mock", model="mock-1.0", latency_ms=1.2
@@ -71,6 +72,7 @@ def test_analyze_clean_payload_returns_200(analyze_client: TestClient) -> None:
     assert body["backend"] == "mock"
     assert body["action"] == "click"
     assert body["target_id"] == "submit-btn"
+    assert body["requires_confirmation"] is True
     assert body["validation_failures"] == 0
 
 

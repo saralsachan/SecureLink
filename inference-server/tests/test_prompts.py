@@ -79,6 +79,15 @@ def test_validate_ok_inside_code_fence() -> None:
     assert parsed["action"] == "scroll"
 
 
+def test_validate_ok_with_requires_confirmation() -> None:
+    ok, parsed, error = validate_action_output(
+        '{"action":"navigate","target_id":null,"value":"https://x.co","reasoning":"leave","requires_confirmation":true}'
+    )
+    assert ok is True
+    assert parsed["requires_confirmation"] is True
+    assert error is None
+
+
 # ── validate_action_output: invalid cases ────────────────────────────────────
 
 def test_validate_rejects_bad_action_enum() -> None:

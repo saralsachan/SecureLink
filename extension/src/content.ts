@@ -4,7 +4,7 @@ import {
   type ElementNode,
   type SensitiveHit
 } from "./dom-sensitivity";
-import { redactStructuralMap } from "./redaction";
+import { redactStructuralMap, resolveTokens } from "./redaction";
 
 type AgentMessage = {
   type: "SECURELINK_ACTIVATE_AGENT";
@@ -18,18 +18,14 @@ type AgentStepPayload = {
   task: string;
 };
 
-type AgentAction =
-  | {
-      action: "click";
-      target_id: string;
-      reasoning: string;
-    }
-  | {
-      action: "scroll";
-      amount: number;
-      reasoning: string;
-      target_id?: string;
-    };
+type AgentAction = {
+  action: "click" | "type" | "scroll" | "navigate";
+  target_id?: string;
+  value?: string | null;
+  amount?: number;
+  reasoning: string;
+  requires_confirmation?: boolean;
+};
 
 type AgentActivationResponse =
   | {
@@ -255,16 +251,90 @@ async function sendToAgent(payload: AgentStepPayload): Promise<AgentAction> {
   return action;
 }
 
-function executeAction(action: AgentAction): void {
+function dispatchInput(target: HTMLElement, value: string): void {
+  // Focus the field so the page treats the input as though the user typed it.
+  target.focus();
+
+  for (const char of value) {
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: char,
+        bubbles: true,
+        cancelable: true,
+        view: window
+      })
+    );
+    target.dispatchEvent(
+      new KeyboardEvent("keypress", {
+        key: char,
+        bubbles: true,
+        cancelable: true,
+        view: window
+      })
+    );
+    target.dispatchEvent(
+      new KeyboardEvent("keyup", {
+        key: char,
+        bubbles: true,
+        cancelable: true,
+        view: window
+      })
+    );
+  }
+
+  const inputEvent = new Event("input", { bubbles: true, cancelable: true });
+  target.dispatchEvent(inputEvent);
+  target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+}
+
+function setNativeValue(target: Element, value: string): void {
+  const proto = (
+    target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+    : target instanceof HTMLInputElement ? HTMLInputElement.prototype
+    : HTMLSelectElement.prototype
+  ) as HTMLInputElement;
+  const valueSetter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+
+  if (valueSetter) {
+    valueSetter.call(target, value);
+  } else {
+    (target as HTMLInputElement).value = value;
+  }
+
+  target.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+  target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+}
+
+function confirmIfNeeded(action: AgentAction, message: string): boolean {
+  if (action.requires_confirmation !== true) {
+    return true;
+  }
+
+  return window.confirm(message);
+}
+
+async function executeAction(
+  action: AgentAction,
+  redactionKey?: ReadonlyMap<string, string> | null
+): Promise<void> {
   console.info("SecureLink executing action:", action);
 
   if (action.action === "click") {
     const target = document.querySelector<HTMLElement>(
-      `[${STRUCTURAL_ID_ATTR}="${CSS.escape(action.target_id)}"]`
+      `[${STRUCTURAL_ID_ATTR}="${CSS.escape(action.target_id ?? "")}"]`
     );
 
     if (!target) {
       throw new Error(`No element found for target_id ${action.target_id}`);
+    }
+
+    const shouldProceed = confirmIfNeeded(
+      action,
+      `SecureLink wants to click "${target.textContent?.trim() || action.target_id}". Proceed?`
+    );
+    if (!shouldProceed) {
+      console.info("SecureLink click cancelled by user.");
+      return;
     }
 
     target.dispatchEvent(
@@ -278,13 +348,74 @@ function executeAction(action: AgentAction): void {
     return;
   }
 
-  if (action.action === "scroll") {
-    window.scrollBy({
-      top: action.amount,
-      behavior: "smooth"
-    });
-    console.info("SecureLink scrolled window by:", action.amount);
+  if (action.action === "type") {
+    const target = document.querySelector<HTMLElement>(
+      `[${STRUCTURAL_ID_ATTR}="${CSS.escape(action.target_id ?? "")}"]`
+    );
+
+    if (!target) {
+      throw new Error(`No element found for target_id ${action.target_id}`);
+    }
+
+    const rawValue = action.value ?? "";
+    const realValue = resolveTokens(rawValue, redactionKey);
+    const shouldProceed = confirmIfNeeded(
+      action,
+      `SecureLink wants to type into "${action.target_id}". Proceed?`
+    );
+    if (!shouldProceed) {
+      console.info("SecureLink type cancelled by user.");
+      return;
+    }
+
+    setNativeValue(target, realValue);
+    dispatchInput(target, realValue);
+    console.info("SecureLink typed into:", target, JSON.stringify(realValue));
+    return;
   }
+
+  if (action.action === "scroll") {
+    const shouldProceed = confirmIfNeeded(
+      action,
+      `SecureLink wants to scroll the page. Proceed?`
+    );
+    if (!shouldProceed) {
+      console.info("SecureLink scroll cancelled by user.");
+      return;
+    }
+
+    const amount =
+      typeof action.amount === "number" ? action.amount
+      : action.value === "up" ? -window.innerHeight * 0.8
+      : action.value === "down" ? window.innerHeight * 0.8
+      : window.innerHeight * 0.5;
+
+    window.scrollBy({ top: amount, behavior: "smooth" });
+    console.info("SecureLink scrolled window by:", amount);
+    return;
+  }
+
+  if (action.action === "navigate") {
+    const destination = action.value || "/";
+    const shouldProceed = confirmIfNeeded(
+      action,
+      `SecureLink wants to navigate to "${destination}". Proceed?`
+    );
+    if (!shouldProceed) {
+      console.info("SecureLink navigate cancelled by user.");
+      return;
+    }
+
+    if (/^https?:\/\//i.test(destination)) {
+      window.location.href = destination;
+    } else {
+      window.location.href = new URL(destination, window.location.href).href;
+    }
+    console.info("SecureLink navigating to:", destination);
+    return;
+  }
+
+  console.warn("SecureLink unknown action:", action.action);
 }
 
 type RedactDebugMessage = { type: "SECURELINK_REDACT_DEBUG" };
@@ -337,7 +468,7 @@ chrome.runtime.onMessage.addListener(
 
         const structuralMap = extractStructuralMap();
         const domHits = detectSensitiveDomElements(structuralMap);
-        const { redactedMap } = redactStructuralMap(structuralMap, domHits);
+        const { redactedMap, redactionKey } = redactStructuralMap(structuralMap, domHits);
 
         const action = await sendToAgent({
           structural_map: redactedMap,
@@ -345,7 +476,7 @@ chrome.runtime.onMessage.addListener(
           task: message.task ?? "Activate agent"
         });
 
-        executeAction(action);
+        await executeAction(action, redactionKey);
         sendResponse({ ok: true, title: document.title, action });
       } catch (error) {
         const message =

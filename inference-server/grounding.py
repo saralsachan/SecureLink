@@ -209,16 +209,20 @@ class ValidatedAction:
     target_id: str | None = None
     value: str | None = None
     reasoning: str | None = None
+    requires_confirmation: bool | None = None
     error: str | None = None
 
     def to_schema_dict(self) -> dict[str, Any]:
         """Serialize back to the strict-JSON action schema shape."""
-        return {
+        out: dict[str, Any] = {
             "action": self.action,
             "target_id": self.target_id,
             "value": self.value,
             "reasoning": self.reasoning,
         }
+        if self.requires_confirmation is not None:
+            out["requires_confirmation"] = self.requires_confirmation
+        return out
 
 
 def ground_action(
@@ -238,6 +242,7 @@ def ground_action(
     target_id = model_output.get("target_id")
     value = model_output.get("value")
     reasoning = model_output.get("reasoning")
+    requires_confirmation = model_output.get("requires_confirmation")
 
     by_id: dict[str, Mapping[str, Any]] = {}
     for element in structural_map or []:
@@ -252,6 +257,7 @@ def ground_action(
             target_id=None,
             value=value,
             reasoning=reasoning,
+            requires_confirmation=requires_confirmation,
             error=(
                 f"action '{action}' requires a target element, but target_id is "
                 "null. Choose the element id from the structural map."
@@ -267,6 +273,7 @@ def ground_action(
             target_id=None,
             value=value,
             reasoning=reasoning,
+            requires_confirmation=requires_confirmation,
         )
 
     element = by_id.get(str(target_id))
@@ -278,6 +285,7 @@ def ground_action(
             target_id=target_id,
             value=value,
             reasoning=reasoning,
+            requires_confirmation=requires_confirmation,
             error=(
                 f"target_id '{target_id}' does not exist in the structural map "
                 "(hallucinated). Use one of the given element ids only."
@@ -293,6 +301,7 @@ def ground_action(
             target_id=target_id,
             value=value,
             reasoning=reasoning,
+            requires_confirmation=requires_confirmation,
             error=element_error,
         )
 
@@ -303,4 +312,5 @@ def ground_action(
         target_id=target_id,
         value=value,
         reasoning=reasoning,
+        requires_confirmation=requires_confirmation,
     )
