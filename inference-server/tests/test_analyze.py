@@ -59,6 +59,7 @@ def _clean_map() -> list[dict]:
     return [
         {"id": "a", "tag": "input", "value": "Username", "placeholder": None},
         {"id": "b", "tag": "input", "value": "", "placeholder": "Search", "aria_label": "Search the site"},
+        {"id": "submit-btn", "tag": "button", "value": "Submit", "role": "button"},
     ]
 
 

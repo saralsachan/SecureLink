@@ -60,6 +60,7 @@ def _run_firewall(payload: dict) -> tuple[bool, str | None]:
 
 MAX_ANALYZE_RETRIES = 2
 _prompt_builder = None  # deferred import so tests can monkeypatch
+_grounder = None  # deferred import so tests can monkeypatch
 
 
 def _prompts():
@@ -75,18 +76,30 @@ def _prompts():
     return _prompt_builder
 
 
+def _ground():
+    global _grounder
+    if _grounder is None:
+        from grounding import ground_action
+
+        _grounder = ground_action
+    return _grounder
+
+
 async def _analyze_with_retry(
     backend: VisionBackend,
     screenshot_b64: str,
     structural_map_json: str,
     task: str,
+    structural_map: list[dict] | None = None,
 ) -> tuple[str, dict | None, int]:
     """
-    Run a prompted analysis with strict-JSON validation and retry-with-correction.
+    Run a prompted analysis with strict-JSON validation + grounding, and retry
+    with correction.
 
-    Returns (accepted_text, parsed_action_or_None, validation_failures, backend, model).
+    Returns (accepted_text, grounded_action_or_None, validation_failures, backend, model).
     """
     build_prompt, build_correction, validate = _prompts()
+    ground = _ground()
     system, user = build_prompt(screenshot_b64, structural_map_json, task)
 
     messages: list[dict] = [{"role": "system", "content": system}]
@@ -106,18 +119,29 @@ async def _analyze_with_retry(
 
         ok, parsed, error = validate(accepted_text)
         if ok:
-            return accepted_text, parsed, validation_failures, backend_name, model_name
+            grounded = ground(parsed, structural_map or [])
+            if grounded.ok:
+                return (
+                    accepted_text,
+                    grounded.to_schema_dict(),
+                    validation_failures,
+                    backend_name,
+                    model_name,
+                )
+            # Schematically valid but not grounded: retry with corrected constraint.
+            error = grounded.error or "unactionable target"
+            ok = False
 
         validation_failures += 1
         if attempt >= MAX_ANALYZE_RETRIES:
             break
-        # Append a retry-with-correction turn so the model can fix its output.
+        # Append a correction turn so the model can fix its output.
         messages.append({"role": "user", "content": user})
         correction = build_correction(accepted_text, error)
         messages.append({"role": "assistant", "content": accepted_text})
         user = correction
 
-    # Ran out of retries with no valid parse.
+    # Ran out of retries with no valid/grounded result.
     return accepted_text, None, validation_failures, backend_name, model_name
 
 # ── FastAPI app ──────────────────────────────────────────────────────────────
@@ -265,12 +289,15 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
 
     import json as _json
 
-    structural_map_json = _json.dumps(
-        [el.model_dump(exclude_none=True) for el in req.structural_map]
-    )
+    structural_map = [el.model_dump(exclude_none=True) for el in req.structural_map]
+    structural_map_json = _json.dumps(structural_map)
 
     accepted_text, parsed, failures, backend_name, model_name = await _analyze_with_retry(
-        _current_backend(), screenshot_b64, structural_map_json, req.prompt
+        _current_backend(),
+        screenshot_b64,
+        structural_map_json,
+        req.prompt,
+        structural_map=structural_map,
     )
 
     return AnalyzeResponse(
