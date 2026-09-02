@@ -27,6 +27,7 @@ type RedactDebugResponse = {
 
 type ActivationRequest = {
   type: "SECURELINK_ACTIVATE_AGENT";
+  sessionId: string;
   screenshotBase64: string;
   task: string;
 };
@@ -282,6 +283,20 @@ visionButton?.addEventListener("click", () => {
   });
 });
 
+async function getOrCreateSessionId(tabId: number): Promise<string> {
+  const key = `securelink:session:${tabId}`;
+  const stored = await chrome.storage.session.get(key);
+  const existing = (stored?.[key] as string | undefined)?.trim();
+
+  if (existing) {
+    return existing;
+  }
+
+  const sessionId = crypto.randomUUID();
+  await chrome.storage.session.set({ [key]: sessionId });
+  return sessionId;
+}
+
 activateButton?.addEventListener("click", async () => {
   const task = "Activate agent";
 
@@ -297,6 +312,7 @@ activateButton?.addEventListener("click", async () => {
   }
 
   try {
+    const sessionId = await getOrCreateSessionId(tab.id);
     const screenshot = await captureVisibleTab();
 
     if (capturePreview) {
@@ -308,6 +324,7 @@ activateButton?.addEventListener("click", async () => {
     console.info("SecureLink popup: sending activation message to tab.", tab.id);
     const response = await sendActivationMessage(tab.id, tab, {
       type: "SECURELINK_ACTIVATE_AGENT",
+      sessionId,
       screenshotBase64: screenshot.screenshotBase64,
       task
     });

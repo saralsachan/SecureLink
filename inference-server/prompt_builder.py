@@ -93,11 +93,18 @@ ANONYMIZED STRUCTURAL MAP (JSON)
 
 Respond with the STRICT JSON object only."""
 
+_PAST_STEPS_TEMPLATE = """\
+PAST STEPS ALREADY COMPLETED (for multi-step context)
+=====================================================
+{history_context}
+"""
+
 
 def build_prompt(
     screenshot_base64: str,
     structural_map_json: str,
     task: str,
+    history_context: str = "",
 ) -> tuple[str, str]:
     """
     Build (system, user) prompt messages for the next-step UI action.
@@ -106,10 +113,12 @@ def build_prompt(
                              by the vision backend).
     * structural_map_json  — the anonymized structural map, serialised to JSON.
     * task                 — the user's task string.
+    * history_context      — optional 'past steps' block describing actions already
+                             taken in this session (for multi-step context).
 
     Returns a (system, user) pair. The system message carries the strict-JSON
-    instruction and task; the user message supplies the structural map and
-    references the screenshot the backend attaches.
+    instruction and task; the user message supplies the structural map (+ optional
+    past steps) and references the screenshot the backend attaches.
     """
     try:
         safe_map = structural_map_json if isinstance(structural_map_json, str) else json.dumps(structural_map_json)
@@ -119,13 +128,17 @@ def build_prompt(
 
     system = _SYSTEM_TEMPLATE.format(task=task)
     user = _USER_TEMPLATE.format(structural_map_json=safe_map)
+    if history_context:
+        user = _PAST_STEPS_TEMPLATE.format(history_context=history_context) + user
+
     # screenshot_base64 is carried for documentation / logging only; the backend
     # attaches it to the request body separately.
     logger.info(
-        "prompts: built prompt (screenshot_chars=%d, map_chars=%d, task_chars=%d)",
+        "prompts: built prompt (screenshot_chars=%d, map_chars=%d, task_chars=%d, history_chars=%d)",
         len(screenshot_base64 or ""),
         len(safe_map),
         len(task),
+        len(history_context),
     )
     return system, user
 

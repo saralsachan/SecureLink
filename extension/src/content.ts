@@ -8,11 +8,13 @@ import { redactStructuralMap, resolveTokens } from "./redaction";
 
 type AgentMessage = {
   type: "SECURELINK_ACTIVATE_AGENT";
+  sessionId: string;
   screenshotBase64: string;
   task?: string;
 };
 
 type AgentStepPayload = {
+  session_id: string;
   structural_map: ElementNode[];
   screenshot_base64: string;
   task: string;
@@ -471,6 +473,7 @@ chrome.runtime.onMessage.addListener(
         const { redactedMap, redactionKey } = redactStructuralMap(structuralMap, domHits);
 
         const action = await sendToAgent({
+          session_id: message.sessionId,
           structural_map: redactedMap,
           screenshot_base64: message.screenshotBase64,
           task: message.task ?? "Activate agent"

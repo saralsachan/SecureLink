@@ -36,6 +36,7 @@ from backends.base import VisionBackend
 
 _backend: VisionBackend | None = None
 _firewall_run = None  # deferred import so tests can monkeypatch
+_session_store = None  # deferred import so tests can monkeypatch
 
 
 def _current_backend() -> VisionBackend:
@@ -44,6 +45,15 @@ def _current_backend() -> VisionBackend:
     if _backend is None:
         _backend = get_backend(BACKEND_CHOICE)
     return _backend
+
+
+def _get_session_store():
+    global _session_store
+    if _session_store is None:
+        from session_store import store as session_store
+
+        _session_store = session_store
+    return _session_store
 
 
 def _run_firewall(payload: dict) -> tuple[bool, str | None]:
@@ -91,6 +101,7 @@ async def _analyze_with_retry(
     structural_map_json: str,
     task: str,
     structural_map: list[dict] | None = None,
+    history_context: str = "",
 ) -> tuple[str, dict | None, int]:
     """
     Run a prompted analysis with strict-JSON validation + grounding, and retry
@@ -100,7 +111,9 @@ async def _analyze_with_retry(
     """
     build_prompt, build_correction, validate = _prompts()
     ground = _ground()
-    system, user = build_prompt(screenshot_b64, structural_map_json, task)
+    system, user = build_prompt(
+        screenshot_b64, structural_map_json, task, history_context=history_context
+    )
 
     messages: list[dict] = [{"role": "system", "content": system}]
     validation_failures = 0
@@ -215,6 +228,28 @@ class AnalyzeResponse(BaseModel):
     validation_failures: int = 0
 
 
+class AgentStepRequest(BaseModel):
+    session_id: str = Field(..., description="Per-tab session id from the extension")
+    screenshot_base64: str = Field(
+        ..., description="Base-64 screenshot (no data: prefix)"
+    )
+    structural_map: list[StructuralElement] = Field(
+        default_factory=list,
+        description="DOM structural map extracted by the extension",
+    )
+    task: str = Field(default="Activate agent", description="Multi-step task")
+    history_n: int = Field(default=3, ge=0, le=20, description="Steps of history to send")
+
+
+class AgentStepResponse(BaseModel):
+    ok: bool
+    action: dict | None = None
+    step: int
+    session_id: str
+    history: list[dict] = Field(default_factory=list)
+    message: str | None = None
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 _DATA_URL_RE = re.compile(r"^data:image/\w+;base64,")
@@ -312,4 +347,68 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
         reasoning=(parsed or {}).get("reasoning"),
         requires_confirmation=(parsed or {}).get("requires_confirmation"),
         validation_failures=failures,
+    )
+
+
+@app.post("/agent/step", response_model=AgentStepResponse)
+async def agent_step(req: AgentStepRequest) -> AgentStepResponse:
+    """One step of a multi-step task, with per-session conversation history."""
+    import json as _json
+
+    screenshot_b64 = _normalise_b64(req.screenshot_base64)
+    structural_map = [el.model_dump(exclude_none=True) for el in req.structural_map]
+
+    # Privacy firewall: reject leaked PII before the request reaches a model.
+    ok, reason = _run_firewall(
+        {"structural_map": structural_map, "screenshot_base64": screenshot_b64}
+    )
+    if not ok:
+        return AgentStepResponse(
+            ok=False,
+            step=0,
+            session_id=req.session_id,
+            message=f"blocked by privacy firewall ({reason})",
+        )
+
+    session_store = _get_session_store()
+    session = session_store.get_or_create(req.session_id, req.task)
+
+    # Combine full task text (earlier task + current follow-up instruction).
+    history_context = session_store.format_history_context(req.session_id)
+
+    structural_map_json = _json.dumps(structural_map)
+
+    accepted_text, parsed, failures, backend_name, model_name = await _analyze_with_retry(
+        _current_backend(),
+        screenshot_b64,
+        structural_map_json,
+        req.task,
+        structural_map=structural_map,
+        history_context=history_context,
+    )
+
+    # Record the outcome so the next step sees this step's action + map.
+    session_store.append(
+        req.session_id,
+        structural_map=structural_map,
+        action=parsed,
+    )
+
+    step = len(session_store.history(req.session_id))
+
+    if parsed is None:
+        return AgentStepResponse(
+            ok=False,
+            step=step,
+            session_id=req.session_id,
+            history=session_store.history(req.session_id),
+            message="model output could not be grounded after retries",
+        )
+
+    return AgentStepResponse(
+        ok=True,
+        action=parsed,
+        step=step,
+        session_id=req.session_id,
+        history=session_store.history(req.session_id),
     )
