@@ -1,8 +1,8 @@
 import type {
   WorkerResponse,
   AnalysisTimings
-} from "./vision.worker";
-import type { VisualSensitivityHit } from "./dom-sensitivity";
+} from "./vision.worker.ts";
+import type { VisualSensitivityHit } from "./dom-sensitivity.ts";
 
 const DEFAULT_MODEL_RELATIVE_URL = "models/mobilevit_xxs_int8.onnx";
 

@@ -28,6 +28,28 @@
           <ul id="redact-key-list"></ul>
         </div>
       </section>
+      <details id="perf-panel" class="perf-panel">
+        <summary>Pipeline latency</summary>
+        <div id="perf-meta" class="perf-meta">Waiting for the first agent step…</div>
+        <table class="perf-table">
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th class="num">ms</th>
+              <th class="num">share</th>
+              <th class="bar-col"></th>
+            </tr>
+          </thead>
+          <tbody id="perf-table-body"></tbody>
+          <tfoot>
+            <tr>
+              <th>Total</th>
+              <th id="perf-total" class="num"></th>
+              <th colspan="2"></th>
+            </tr>
+          </tfoot>
+        </table>
+      </details>
       <img id="capture-preview" alt="Captured tab preview" hidden />
     </main>
     <script type="module" src="/src/popup.ts"></script>

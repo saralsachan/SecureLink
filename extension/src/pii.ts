@@ -1,6 +1,6 @@
 import Tesseract from "tesseract.js";
-import type { OcrLine } from "./pii-detection";
-import type { BoundingBox } from "./dom-sensitivity";
+import type { OcrLine } from "./pii-detection.ts";
+import type { BoundingBox } from "./dom-sensitivity.ts";
 
 const { createWorker, OEM } = Tesseract;
 

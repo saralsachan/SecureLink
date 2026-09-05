@@ -1,5 +1,5 @@
 import * as ort from "onnxruntime-web";
-import type { BoundingBox } from "./dom-sensitivity";
+import type { BoundingBox } from "./dom-sensitivity.ts";
 
 export type FaceDetection = {
   bbox: BoundingBox;

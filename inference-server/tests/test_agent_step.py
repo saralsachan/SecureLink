@@ -200,3 +200,65 @@ def test_scripted_full_flow_with_distinct_session_ids_are_isolated(step_client) 
     )
     assert resp_a2.json()["step"] == 2
     assert resp_a2.json()["action"]["target_id"] == "input-email"
+
+
+def test_extension_camel_case_fields_reach_the_model_prompt(step_client) -> None:
+    """The extension sends camelCase nodes; they must survive the server model."""
+    client, calls = step_client
+
+    resp = client.post(
+        "/agent/step",
+        json={
+            "session_id": "sess-camel",
+            "screenshot_base64": _solid_png_b64(),
+            "task": "fill the email",
+            "structural_map": [
+                {
+                    "id": "mail",
+                    "tag": "input",
+                    "role": "textbox",
+                    "inputType": "email",
+                    "ariaLabel": "Email address",
+                    "autocomplete": "email",
+                    "bbox": {"x": 10, "y": 20, "w": 200, "h": 30},
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["action"]["target_id"] == "mail"
+    # Grounded on the first model call (no hallucination retries).
+    assert len(calls) == 1
+
+    user_texts = "\n".join(
+        m.get("content", "") for call in calls for m in call["messages"] if m.get("role") == "user"
+    )
+    assert '"inputType": "email"' in user_texts
+    assert '"bbox":' in user_texts
+    assert '"ariaLabel": "Email address"' in user_texts
+
+
+def test_agent_step_returns_server_timings(step_client) -> None:
+    """agent/step reports the firewall/VLM/grounding split and a total."""
+    client, _ = step_client
+
+    resp = client.post(
+        "/agent/step",
+        json={
+            "session_id": "sess-timings",
+            "screenshot_base64": _solid_png_b64(),
+            "task": "fill the name",
+            "structural_map": [
+                {"id": "name", "tag": "input", "role": "textbox", "inputType": "text"},
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    timings = resp.json()["timings"]
+    assert set(("firewall_ms", "vlm_ms", "grounding_ms", "total_ms")) <= set(timings)
+    assert timings["total_ms"] >= 0
+    assert timings["total_ms"] >= timings["firewall_ms"]
+    assert timings["total_ms"] >= timings["vlm_ms"]
+    assert timings["total_ms"] >= timings["grounding_ms"]

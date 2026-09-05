@@ -6,12 +6,13 @@
   "scripts": {
     "build": "vite build && vite build --config vite.content.config.ts",
     "lint": "tsc --noEmit",
-    "test": "node --disable-warning=ExperimentalWarning --test tests/detectSensitiveDomElements.test.ts tests/pii-detection.test.ts tests/redaction.test.ts"
+    "test": "node --disable-warning=ExperimentalWarning --test tests/detectSensitiveDomElements.test.ts tests/pii-detection.test.ts tests/redaction.test.ts tests/pipeline-timing.test.ts tests/redaction-tracker.test.ts tests/dom-map.test.ts tests/delta.test.ts"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.0.8",
     "@types/chrome": "^0.0.306",
     "@types/node": "^22.10.5",
+    "jsdom": "^29.1.1",
     "typescript": "^5.7.3",
     "vite": "^6.0.7"
   },

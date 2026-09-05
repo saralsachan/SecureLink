@@ -133,3 +133,88 @@ img[hidden] {
   color: #53606f;
   word-break: break-all;
 }
+
+/* Phase 3 — live pipeline latency overlay */
+
+.perf-panel {
+  margin-top: 12px;
+  border: 1px solid #d8dee8;
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.perf-panel summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  font-weight: 650;
+}
+
+.perf-panel summary::before {
+  content: "▸ ";
+  color: #53606f;
+}
+
+.perf-panel[open] summary::before {
+  content: "▾ ";
+}
+
+.perf-meta {
+  padding: 0 10px 8px;
+  color: #53606f;
+}
+
+.perf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-table th,
+.perf-table td {
+  padding: 3px 6px;
+  text-align: left;
+}
+
+.perf-table thead th {
+  color: #53606f;
+  font-weight: 600;
+  border-top: 1px solid #e8ecf1;
+}
+
+.perf-table th.num,
+.perf-table td.num {
+  text-align: right;
+}
+
+.perf-table tbody tr {
+  border-top: 1px solid #eef1f5;
+}
+
+.perf-table tbody tr.server-divider td {
+  border-top: 1px dashed #d8dee8;
+  color: #6f3fc7;
+  font-weight: 650;
+  padding-top: 6px;
+}
+
+.perf-table tfoot th {
+  border-top: 1px solid #d8dee8;
+  padding-top: 6px;
+  font-size: 13px;
+}
+
+.perf-table .bar-cell {
+  padding-right: 10px;
+}
+
+.perf-table .bar {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  background: #146ef5;
+}
+
+.perf-table .bar.server {
+  background: #6f3fc7;
+}

@@ -2,7 +2,7 @@ import type {
   BoundingBox,
   VisualSensitivityHit,
   VisualSensitivityClass
-} from "./dom-sensitivity";
+} from "./dom-sensitivity.ts";
 
 export type OcrWord = {
   text: string;

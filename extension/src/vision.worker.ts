@@ -1,10 +1,10 @@
 /// <reference lib="webworker" />
 
 import * as ort from "onnxruntime-web";
-import { detectFaces } from "./blazeface";
-import { runOcr } from "./pii";
-import { classifyOcrLines } from "./pii-detection";
-import type { VisualSensitivityHit } from "./dom-sensitivity";
+import { detectFaces } from "./blazeface.ts";
+import { runOcr } from "./pii.ts";
+import { classifyOcrLines } from "./pii-detection.ts";
+import type { VisualSensitivityHit } from "./dom-sensitivity.ts";
 
 const MODEL_SIZE = 256;
 const INPUT_NAME = "pixel_values";

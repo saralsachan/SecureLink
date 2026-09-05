@@ -1,7 +1,15 @@
 import "./style.css";
-import { getVisionBackend, runVisionModel } from "./vision";
-import { redact, redactStructuralMap, selfVerifyRedaction, type OcrPipeline } from "./redaction";
-import type { BoundingBox, ElementNode, SensitiveHit } from "./dom-sensitivity";
+import { getVisionBackend, runVisionAnalysis, runVisionModel } from "./vision.ts";
+import { redact, redactStructuralMap, selfVerifyRedaction, type OcrPipeline } from "./redaction.ts";
+import { runOcr } from "./pii.ts";
+import { classifyOcrLines } from "./pii-detection.ts";
+import type { BoundingBox, ElementNode, SensitiveHit, VisualSensitivityHit } from "./dom-sensitivity.ts";
+import {
+  startTimer,
+  type PipelineMetrics,
+  type PipelineTimings,
+  type ServerTimings
+} from "./pipeline-timing.ts";
 
 const activateButton = document.querySelector<HTMLButtonElement>("#activate-agent");
 const visionButton = document.querySelector<HTMLButtonElement>("#vision-self-test");
@@ -18,6 +26,9 @@ const redactRedactedCanvas = document.querySelector<HTMLCanvasElement>(
 );
 const redactKeyList = document.querySelector<HTMLUListElement>("#redact-key-list");
 const redactKeyCount = document.querySelector<HTMLSpanElement>("#redact-key-count");
+const perfMeta = document.querySelector<HTMLDivElement>("#perf-meta");
+const perfTableBody = document.querySelector<HTMLTableSectionElement>("#perf-table-body");
+const perfTotal = document.querySelector<HTMLTableHeaderCellElement>("#perf-total");
 
 type RedactDebugResponse = {
   structuralMap: ElementNode[];
@@ -37,7 +48,33 @@ type ActivationResponse = {
   title: string;
   action?: unknown;
   error?: string;
+  timings?: PipelineTimings;
 };
+
+type PerfUpdateMessage = {
+  type: "SECURELINK_PERF_UPDATE";
+  sessionId: string;
+  timings: PipelineTimings;
+  server: ServerTimings | null;
+  metrics: PipelineMetrics;
+};
+
+const STAGE_ROWS: Array<{ key: keyof PipelineTimings; label: string }> = [
+  { key: "capture", label: "Screenshot capture" },
+  { key: "structuralMap", label: "Structural map" },
+  { key: "vitInference", label: "Local ViT inference" },
+  { key: "sensitiveDetection", label: "Sensitive detection (DOM)" },
+  { key: "redaction", label: "Redaction" },
+  { key: "verify", label: "Self-verification" },
+  { key: "networkRoundTrip", label: "Network round trip" },
+  { key: "actionExecution", label: "Action execution" }
+];
+
+const SERVER_ROWS: Array<{ key: keyof ServerTimings; label: string }> = [
+  { key: "firewallMs", label: "Server · privacy firewall" },
+  { key: "vlmMs", label: "Server · VLM reasoning" },
+  { key: "groundingMs", label: "Server · grounding" }
+];
 
 function setStatus(message: string): void {
   if (statusText) {
@@ -78,6 +115,43 @@ async function captureVisibleTab(): Promise<{
     dataUrl,
     screenshotBase64: stripDataUrlPrefix(dataUrl)
   };
+}
+
+function dataUrlToImageData(dataUrl: string): Promise<ImageData> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+
+      if (!context) {
+        reject(new Error("2D canvas context unavailable"));
+        return;
+      }
+
+      context.drawImage(image, 0, 0);
+      resolve(context.getImageData(0, 0, canvas.width, canvas.height));
+    };
+    image.onerror = () => reject(new Error("Could not decode the captured screenshot."));
+    image.src = dataUrl;
+  });
+}
+
+function imageDataToCanvas(imageData: ImageData): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("2D canvas context unavailable");
+  }
+
+  context.putImageData(imageData, 0, 0);
+  return canvas;
 }
 
 interface TabInfo {
@@ -166,24 +240,7 @@ async function sendActivationMessage(
 
 async function captureTabToImageData(): Promise<ImageData> {
   const { dataUrl } = await captureVisibleTab();
-
-  const image = new Image();
-  image.src = dataUrl;
-
-  await image.decode();
-
-  const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-
-  if (!context) {
-    throw new Error("2D canvas context unavailable");
-  }
-
-  context.drawImage(image, 0, 0);
-  return context.getImageData(0, 0, canvas.width, canvas.height);
+  return dataUrlToImageData(dataUrl);
 }
 
 function syntheticGradientImageData(
@@ -262,6 +319,196 @@ async function runVisionSelfTest(): Promise<VisionSelfTestResult> {
   return result;
 }
 
+// ── Phase 3 — live latency overlay ──────────────────────────────────────────
+
+const LAST_PERF_EVENT: PerfUpdateMessage | null = null;
+
+function renderPerf(
+  timings: PipelineTimings | null | undefined,
+  server: ServerTimings | null | undefined,
+  metrics: PipelineMetrics | null | undefined
+): void {
+  if (!perfTableBody || !perfTotal) {
+    return;
+  }
+
+  perfTableBody.replaceChildren();
+
+  if (!timings) {
+    if (perfMeta) {
+      perfMeta.textContent = "Waiting for the first agent step…";
+    }
+    perfTotal.textContent = "—";
+    return;
+  }
+
+  const values = STAGE_ROWS.map((row) => timings[row.key] ?? 0);
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const scaleMax = Math.max(total, 1);
+
+  for (const [index, row] of STAGE_ROWS.entries()) {
+    const value = values[index];
+    const share = total > 0 ? (value / total) * 100 : 0;
+
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${row.label}</td>` +
+      `<td class="num">${Math.round(value)}</td>` +
+      `<td class="num">${share < 1 && value > 0 ? "<1" : Math.round(share)}%</td>` +
+      `<td class="bar-cell"><span class="bar" style="width:${(value / scaleMax) * 100}%"></span></td>`;
+    perfTableBody.appendChild(tr);
+  }
+
+  if (server) {
+    for (const row of SERVER_ROWS) {
+      const value = server[row.key] ?? 0;
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td class="server-divider">${row.label}</td>` +
+        `<td class="num server-divider">${Math.round(value)}</td>` +
+        `<td colspan="2" class="server-divider"></td>`;
+      perfTableBody.appendChild(tr);
+    }
+  }
+
+  perfTotal.textContent = `${Math.round(total)} ms`;
+
+  if (perfMeta) {
+    if (metrics) {
+      perfMeta.textContent =
+        `Step ${metrics.step} · ${metrics.deltaUsed ? "delta" : "full"} · ` +
+        `${metrics.changedElements} changed / ${metrics.totalElements} total`;
+    } else {
+      perfMeta.textContent = `Total ${Math.round(total)} ms end-to-end`;
+    }
+  }
+}
+
+async function currentTabSessionId(): Promise<string | null> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+  if (!tab?.id) {
+    return null;
+  }
+
+  return getOrCreateSessionId(tab.id);
+}
+
+async function renderLastPerfForCurrentTab(): Promise<void> {
+  try {
+    const sessionId = await currentTabSessionId();
+    const perfKey = sessionId ? `securelink:perf:${sessionId}` : null;
+
+    if (!perfKey) {
+      return;
+    }
+
+    const stored = await chrome.storage.session.get(perfKey);
+    const value = stored?.[perfKey] as
+      | { timings?: PipelineTimings; server?: ServerTimings | null; metrics?: PipelineMetrics }
+      | undefined;
+
+    renderPerf(value?.timings, value?.server, value?.metrics);
+  } catch {
+    // Non-fatal: the overlay just stays on its empty state.
+  }
+}
+
+void renderLastPerfForCurrentTab();
+
+chrome.runtime.onMessage.addListener((message: unknown) => {
+  if (typeof message !== "object" || message === null) {
+    return;
+  }
+  const perfMessage = message as Partial<PerfUpdateMessage>;
+
+  if (perfMessage.type !== "SECURELINK_PERF_UPDATE") {
+    return;
+  }
+
+  renderPerf(perfMessage.timings, perfMessage.server, perfMessage.metrics);
+});
+
+// ── Measure-only popup stages (capture / ViT / self-verify) ─────────────────
+
+/**
+ * Run the ViT + visual/face/OCR analysis and self-verification purely for
+ * measurement. Results are never used to alter what is sent to the server
+ * (measure-only). Any failure just leaves the stage at 0 ms.
+ */
+async function measureVisualStages(
+  imageData: ImageData
+): Promise<{ vitInference: number; verify: number }> {
+  const result = { vitInference: 0, verify: 0 };
+
+  try {
+    const stop = startTimer();
+    const analysis = await runVisionAnalysis(imageData);
+    result.vitInference = stop();
+    console.info(
+      `[perf] vitInference ${result.vitInference.toFixed(1)} ms ` +
+        `(${analysis.hits.length} visual hits)`
+    );
+
+    try {
+      const verifyStop = startTimer();
+      const canvas = imageDataToCanvas(imageData);
+      const pipeline: OcrPipeline = {
+        runOcr: async (sourceCanvas: HTMLCanvasElement) => {
+          const context = sourceCanvas.getContext("2d");
+
+          if (!context) {
+            throw new Error("2D context unavailable");
+          }
+
+          return runOcr(context.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height));
+        },
+        classifyOcrLines
+      };
+      const verification = await selfVerifyRedaction(
+        canvas,
+        analysis.hits as VisualSensitivityHit[],
+        pipeline,
+        { failClosed: false }
+      );
+      result.verify = verifyStop();
+      console.info(
+        `[perf] verify ${result.verify.toFixed(1)} ms ` +
+          `(safe=${verification.safe}, remaining=${verification.remainingHits.length})`
+      );
+    } catch (verifyError) {
+      console.warn(
+        "SecureLink popup: self-verification skipped (measure-only).",
+        verifyError
+      );
+    }
+  } catch (visionError) {
+    console.warn(
+      "SecureLink popup: vision analysis skipped (measure-only).",
+      visionError
+    );
+  }
+
+  return result;
+}
+
+async function storePopupStageTimings(
+  sessionId: string,
+  stages: { capture: number; vitInference: number; verify: number }
+): Promise<void> {
+  const key = `securelink:perf:${sessionId}`;
+  const existing = await chrome.storage.session.get(key);
+  const current = (existing?.[key] as Record<string, unknown> | undefined) ?? {};
+
+  await chrome.storage.session.set({
+    [key]: {
+      ...current,
+      ...stages,
+      ts: Date.now()
+    }
+  });
+}
+
 const secureLinkWindow = window as typeof window & {
   __secureLinkVisionSelfTest?: typeof runVisionSelfTest;
   __secureLinkRunVision?: typeof runVisionModel;
@@ -313,12 +560,26 @@ activateButton?.addEventListener("click", async () => {
 
   try {
     const sessionId = await getOrCreateSessionId(tab.id);
+
+    const captureStop = startTimer();
     const screenshot = await captureVisibleTab();
+    const captureMs = captureStop();
 
     if (capturePreview) {
       capturePreview.src = screenshot.dataUrl;
       capturePreview.hidden = false;
     }
+
+    // Measure-only: decode + ViT/visual analysis + self-verify so the overlay
+    // and console show real numbers for every stage.
+    setStatus("Analyzing visual context...");
+    const imageData = await dataUrlToImageData(screenshot.dataUrl);
+    const visual = await measureVisualStages(imageData);
+    await storePopupStageTimings(sessionId, {
+      capture: captureMs,
+      vitInference: visual.vitInference,
+      verify: visual.verify
+    });
 
     setStatus("Sending page context...");
     console.info("SecureLink popup: sending activation message to tab.", tab.id);
@@ -330,6 +591,7 @@ activateButton?.addEventListener("click", async () => {
     });
 
     console.info("SecureLink popup: received content response.", response);
+    renderPerf(response.timings, null, null);
     setStatus(
       response.ok
         ? `Action executed on: ${response.title}`

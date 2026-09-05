@@ -1,5 +1,5 @@
-import type { BoundingBox, ElementNode, SensitiveHit, VisualSensitivityHit } from "./dom-sensitivity";
-import type { OcrLine } from "./pii-detection";
+import { detectSensitiveDomElements, type BoundingBox, type ElementNode, type SensitiveHit, type VisualSensitivityHit } from "./dom-sensitivity.ts";
+import type { OcrLine } from "./pii-detection.ts";
 
 export const FAIL_CLOSED = true;
 export const DEFAULT_REDACTION_PADDING = 4;
@@ -121,6 +121,97 @@ export function resolveTokens(
     REDACTED_TOKEN_RE,
     (token) => redactionKey.get(token) ?? token
   );
+}
+
+/**
+ * Persistent redaction tracker for delta-based sync (Phase 2).
+ *
+ * Unlike `redactStructuralMap` (which clears and rebuilds the key every call),
+ * this keeps one stable redaction key across a session and re-tokenizes only
+ * the given element ids. Stable tokens mean a field typed over several steps
+ * keeps the same `[REDACTED_*]` placeholder instead of churning the key, and
+ * `resolveTokens` can always map it back to the latest real value.
+ */
+export type RedactionTracker = ReturnType<typeof createRedactionTracker>;
+
+export function createRedactionTracker(): {
+  /** Re-tokenize *ids* in-place within *map*; other elements are untouched. */
+  redactNodes(map: ElementNode[], ids: string[]): void;
+  getRedactionKey(): ReadonlyMap<string, string>;
+  redactionKeySize(): number;
+} {
+  const key = new Map<string, string>();
+  const tokenFor = new Map<string, Map<string, string>>(); // elementId -> class -> token
+  const nextIndex = new Map<string, number>();
+
+  function tokenForClass(elementId: string, cls: string, realValue: string): string {
+    const byClass = tokenFor.get(elementId) ?? new Map<string, string>();
+    let token = byClass.get(cls);
+
+    if (!token) {
+      const index = (nextIndex.get(cls) ?? 0) + 1;
+      nextIndex.set(cls, index);
+      token = `[REDACTED_${cls.toUpperCase().replace(/-/g, "_")}_${index}]`;
+      byClass.set(cls, token);
+      tokenFor.set(elementId, byClass);
+    }
+
+    // Re-register the *current* real value so resolveTokens maps the token to
+    // the latest typed value.
+    key.set(token, realValue ?? token);
+    return token;
+  }
+
+  return {
+    redactNodes(map: ElementNode[], ids: string[]): void {
+      const byId = new Map(map.map((n) => [n.id, n]));
+
+      for (const id of ids) {
+        const node = byId.get(id);
+
+        if (!node) {
+          continue;
+        }
+
+        const hits = detectSensitiveDomElements([node]);
+
+        if (hits.length === 0) {
+          continue;
+        }
+
+        const realValue = node.value ?? node.placeholder ?? node.ariaLabel;
+
+        if (realValue == null) {
+          continue;
+        }
+
+        const seen = new Set<string>();
+        for (const hit of hits) {
+          if (seen.has(hit.sensitivityClass)) {
+            continue;
+          }
+          seen.add(hit.sensitivityClass);
+          const token = tokenForClass(node.id, hit.sensitivityClass, realValue);
+
+          if (node.value != null) {
+            node.value = token;
+          }
+          if (node.placeholder != null) {
+            node.placeholder = token;
+          }
+          if (node.ariaLabel != null) {
+            node.ariaLabel = token;
+          }
+        }
+      }
+    },
+    getRedactionKey(): ReadonlyMap<string, string> {
+      return key;
+    },
+    redactionKeySize(): number {
+      return key.size;
+    }
+  };
 }
 
 export function redactStructuralMap(

@@ -14,6 +14,7 @@ Run:
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import re
 from pathlib import Path
@@ -33,6 +34,8 @@ BACKEND_CHOICE = os.getenv("MODEL_BACKEND", "cloud")
 
 from backends import get_backend
 from backends.base import VisionBackend
+
+logger = logging.getLogger("securelink.server")
 
 _backend: VisionBackend | None = None
 _firewall_run = None  # deferred import so tests can monkeypatch
@@ -64,6 +67,15 @@ def _run_firewall(payload: dict) -> tuple[bool, str | None]:
 
         _firewall_run = privacy_firewall
     return _firewall_run(payload)
+
+
+def _run_firewall_timed(payload: dict) -> tuple[bool, str | None, float]:
+    """Time the privacy firewall; returns (ok, reason, duration_ms)."""
+    import time as _time
+
+    start = _time.perf_counter()
+    ok, reason = _run_firewall(payload)
+    return ok, reason, (_time.perf_counter() - start) * 1000.0
 
 
 # ── Prompted analysis (system+user prompt + strict-JSON validation) ─────────
@@ -102,12 +114,15 @@ async def _analyze_with_retry(
     task: str,
     structural_map: list[dict] | None = None,
     history_context: str = "",
+    timings: dict | None = None,
 ) -> tuple[str, dict | None, int]:
     """
     Run a prompted analysis with strict-JSON validation + grounding, and retry
     with correction.
 
     Returns (accepted_text, grounded_action_or_None, validation_failures, backend, model).
+    When *timings* is supplied, VLM call and grounding durations are accumulated
+    into ``timings["vlm_ms"]`` / ``timings["grounding_ms"]``.
     """
     build_prompt, build_correction, validate = _prompts()
     ground = _ground()
@@ -123,16 +138,29 @@ async def _analyze_with_retry(
 
     for attempt in range(MAX_ANALYZE_RETRIES + 1):
         turn_messages = messages + [{"role": "user", "content": user}]
+        import time as _time
+
+        vlm_start = _time.perf_counter()
         result = await backend.describe_image(
             screenshot_b64, messages=turn_messages
         )
+        if timings is not None:
+            timings["vlm_ms"] = timings.get("vlm_ms", 0.0) + (
+                _time.perf_counter() - vlm_start
+            ) * 1000.0
+
         accepted_text = result.text
         backend_name = result.backend
         model_name = result.model
 
         ok, parsed, error = validate(accepted_text)
         if ok:
+            ground_start = _time.perf_counter()
             grounded = ground(parsed, structural_map or [])
+            if timings is not None:
+                timings["grounding_ms"] = timings.get("grounding_ms", 0.0) + (
+                    _time.perf_counter() - ground_start
+                ) * 1000.0
             if grounded.ok:
                 return (
                     accepted_text,
@@ -200,7 +228,13 @@ class StructuralElement(BaseModel):
     aria_label: str | None = None
     ariaLabel: str | None = None
     input_type: str | None = None
+    inputType: str | None = None
     autocomplete: str | None = None
+    bbox: dict | None = None
+    hidden: bool | None = None
+    display: str | None = None
+    visibility: str | None = None
+    contenteditable: str | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -226,6 +260,7 @@ class AnalyzeResponse(BaseModel):
     reasoning: str | None = None
     requires_confirmation: bool | None = None
     validation_failures: int = 0
+    timings: dict | None = None
 
 
 class AgentStepRequest(BaseModel):
@@ -248,6 +283,7 @@ class AgentStepResponse(BaseModel):
     session_id: str
     history: list[dict] = Field(default_factory=list)
     message: str | None = None
+    timings: dict | None = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -311,7 +347,7 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
         "screenshot_base64": screenshot_b64,
     }
 
-    ok, reason = _run_firewall(payload)
+    ok, reason, firewall_ms = _run_firewall_timed(payload)
     if not ok:
         # reason is a sanitised category, never the leaked value.
         raise HTTPException(
@@ -328,13 +364,18 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     structural_map = [el.model_dump(exclude_none=True) for el in req.structural_map]
     structural_map_json = _json.dumps(structural_map)
 
+    timings: dict = {"firewall_ms": firewall_ms, "vlm_ms": 0.0, "grounding_ms": 0.0}
+
     accepted_text, parsed, failures, backend_name, model_name = await _analyze_with_retry(
         _current_backend(),
         screenshot_b64,
         structural_map_json,
         req.prompt,
         structural_map=structural_map,
+        timings=timings,
     )
+
+    timings["total_ms"] = firewall_ms + timings["vlm_ms"] + timings["grounding_ms"]
 
     return AnalyzeResponse(
         blocked=False,
@@ -347,6 +388,7 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
         reasoning=(parsed or {}).get("reasoning"),
         requires_confirmation=(parsed or {}).get("requires_confirmation"),
         validation_failures=failures,
+        timings=timings,
     )
 
 
@@ -359,7 +401,7 @@ async def agent_step(req: AgentStepRequest) -> AgentStepResponse:
     structural_map = [el.model_dump(exclude_none=True) for el in req.structural_map]
 
     # Privacy firewall: reject leaked PII before the request reaches a model.
-    ok, reason = _run_firewall(
+    ok, reason, firewall_ms = _run_firewall_timed(
         {"structural_map": structural_map, "screenshot_base64": screenshot_b64}
     )
     if not ok:
@@ -378,6 +420,8 @@ async def agent_step(req: AgentStepRequest) -> AgentStepResponse:
 
     structural_map_json = _json.dumps(structural_map)
 
+    timings: dict = {"firewall_ms": firewall_ms, "vlm_ms": 0.0, "grounding_ms": 0.0}
+
     accepted_text, parsed, failures, backend_name, model_name = await _analyze_with_retry(
         _current_backend(),
         screenshot_b64,
@@ -385,6 +429,13 @@ async def agent_step(req: AgentStepRequest) -> AgentStepResponse:
         req.task,
         structural_map=structural_map,
         history_context=history_context,
+        timings=timings,
+    )
+
+    timings["total_ms"] = firewall_ms + timings["vlm_ms"] + timings["grounding_ms"]
+    logger.info(
+        "agent/step timing: %s",
+        {k: round(v, 2) for k, v in timings.items()},
     )
 
     # Record the outcome so the next step sees this step's action + map.
@@ -403,6 +454,7 @@ async def agent_step(req: AgentStepRequest) -> AgentStepResponse:
             session_id=req.session_id,
             history=session_store.history(req.session_id),
             message="model output could not be grounded after retries",
+            timings=timings,
         )
 
     return AgentStepResponse(
@@ -411,4 +463,5 @@ async def agent_step(req: AgentStepRequest) -> AgentStepResponse:
         step=step,
         session_id=req.session_id,
         history=session_store.history(req.session_id),
+        timings=timings,
     )
