@@ -325,12 +325,92 @@ function setNativeValue(target: Element, value: string): void {
   target.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
 }
 
-function confirmIfNeeded(action: AgentAction, message: string): boolean {
+function confirmIfNeeded(action: AgentAction, message: string): Promise<boolean> {
   if (action.requires_confirmation !== true) {
-    return true;
+    return Promise.resolve(true);
   }
 
-  return window.confirm(message);
+  return requestSensitiveConfirmation(message);
+}
+
+/**
+ * Clean in-page confirmation dialog (replaces the native `confirm()`). A small
+ * centered card on a dimmed overlay with only two buttons, full keyboard
+ * support, and immediate cleanup. Falls back to a native confirm if the page
+ * DOM is unavailable.
+ */
+function requestSensitiveConfirmation(bodyText: string): Promise<boolean> {
+  if (!document.body) {
+    return Promise.resolve(window.confirm(bodyText));
+  }
+
+  const resolveRef: { current: ((proceed: boolean) => void) | null } = {
+    current: null
+  };
+  const promise = new Promise<boolean>((resolve) => {
+    resolveRef.current = resolve;
+  });
+
+  const overlay = document.createElement("div");
+  const card = document.createElement("div");
+  const title = document.createElement("div");
+  const body = document.createElement("div");
+  const actions = document.createElement("div");
+  const cancel = document.createElement("button");
+  const proceed = document.createElement("button");
+
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(15,23,42,.45);" +
+    "display:flex;align-items:center;justify-content:center;" +
+    "z-index:2147483000;padding:24px;";
+  card.style.cssText =
+    "background:#ffffff;border-radius:12px;box-shadow:0 12px 40px rgba(15,23,42,.28);" +
+    "max-width:380px;width:100%;padding:20px 22px;font-family:-apple-system,Segoe UI,Roboto,sans-serif;";
+  title.style.cssText =
+    "font-size:15px;font-weight:700;color:#111827;margin-bottom:8px;";
+  body.style.cssText =
+    "font-size:13px;line-height:1.5;color:#374151;margin-bottom:18px;word-break:break-word;";
+  actions.style.cssText =
+    "display:flex;gap:10px;justify-content:flex-end;";
+  cancel.style.cssText =
+    "font:inherit;font-size:13px;font-weight:600;padding:7px 14px;border-radius:8px;" +
+    "border:1px solid #d1d5db;background:#ffffff;color:#374151;cursor:pointer;";
+  proceed.style.cssText =
+    "font:inherit;font-size:13px;font-weight:600;padding:7px 14px;border-radius:8px;" +
+    "border:1px solid #146ef5;background:#146ef5;color:#ffffff;cursor:pointer;";
+
+  title.textContent = "SecureLink action";
+  body.textContent = bodyText;
+  cancel.textContent = "Cancel";
+  proceed.textContent = "Proceed";
+
+  actions.append(cancel, proceed);
+  card.append(title, body, actions);
+  overlay.append(card);
+  document.body.appendChild(overlay);
+
+  const resolve = (proceedValue: boolean): void => {
+    overlay.remove();
+    resolveRef.current?.(proceedValue);
+    resolveRef.current = null;
+  };
+
+  cancel.addEventListener("click", () => resolve(false));
+  proceed.addEventListener("click", () => resolve(true));
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) {
+      resolve(false);
+    }
+  });
+  overlay.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      resolve(false);
+    }
+  });
+  overlay.tabIndex = -1;
+  proceed.focus();
+
+  return promise;
 }
 
 async function executeAction(
@@ -348,7 +428,7 @@ async function executeAction(
       throw new Error(`No element found for target_id ${action.target_id}`);
     }
 
-    const shouldProceed = confirmIfNeeded(
+    const shouldProceed = await confirmIfNeeded(
       action,
       `SecureLink wants to click "${target.textContent?.trim() || action.target_id}". Proceed?`
     );
@@ -381,7 +461,7 @@ async function executeAction(
 
     const rawValue = action.value ?? "";
     const realValue = resolveTokens(rawValue, redactionKey);
-    const shouldProceed = confirmIfNeeded(
+    const shouldProceed = await confirmIfNeeded(
       action,
       `SecureLink wants to type into "${action.target_id}". Proceed?`
     );
@@ -399,7 +479,7 @@ async function executeAction(
   }
 
   if (action.action === "scroll") {
-    const shouldProceed = confirmIfNeeded(action, `SecureLink wants to scroll the page. Proceed?`);
+    const shouldProceed = await confirmIfNeeded(action, `SecureLink wants to scroll the page. Proceed?`);
     if (!shouldProceed) {
       console.info("SecureLink scroll cancelled by user.");
       recordAudit("info", "Cancelled scrolling the page");
@@ -420,7 +500,7 @@ async function executeAction(
 
   if (action.action === "navigate") {
     const destination = action.value || "/";
-    const shouldProceed = confirmIfNeeded(
+    const shouldProceed = await confirmIfNeeded(
       action,
       `SecureLink wants to navigate to "${destination}". Proceed?`
     );

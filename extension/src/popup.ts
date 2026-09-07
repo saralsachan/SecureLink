@@ -24,15 +24,21 @@ const visionButton = document.querySelector<HTMLButtonElement>("#vision-self-tes
 const redactionDebugButton = document.querySelector<HTMLButtonElement>(
   "#redaction-debug"
 );
+const taskInput = document.querySelector<HTMLInputElement>("#task-input");
+const statusEl = document.querySelector<HTMLDivElement>("#status");
+const statusText = document.querySelector<HTMLSpanElement>("#status-text");
+const reviewPanel = document.querySelector<HTMLElement>("#review-panel");
+const reviewRaw = document.querySelector<HTMLImageElement>("#review-raw");
+const reviewRedacted = document.querySelector<HTMLImageElement>("#review-redacted");
+const reviewToggle = document.querySelector<HTMLButtonElement>("#review-toggle");
+const reviewRedactedBox =
+  document.querySelector<HTMLElement>("#review-redacted-box");
 const localOnlyToggle =
   document.querySelector<HTMLInputElement>("#local-only-toggle");
 const modeHint = document.querySelector<HTMLParagraphElement>("#mode-hint");
 const auditList = document.querySelector<HTMLUListElement>("#audit-list");
 const auditEmpty = document.querySelector<HTMLParagraphElement>("#audit-empty");
 const auditClear = document.querySelector<HTMLButtonElement>("#audit-clear");
-const capturePreview =
-  document.querySelector<HTMLImageElement>("#capture-preview");
-const statusText = document.querySelector<HTMLParagraphElement>("#status");
 const redactDebugSection = document.querySelector<HTMLElement>("#redact-debug");
 const redactRawCanvas = document.querySelector<HTMLCanvasElement>("#redact-raw");
 const redactRedactedCanvas = document.querySelector<HTMLCanvasElement>(
@@ -94,10 +100,26 @@ const SERVER_ROWS: Array<{ key: keyof ServerTimings; label: string }> = [
   { key: "groundingMs", label: "Server · grounding" }
 ];
 
+type Phase = "idle" | "capturing" | "reasoning" | "executing";
+
+const PHASE_TEXT: Record<Phase, string> = {
+  idle: "Ready",
+  capturing: "Capturing…",
+  reasoning: "Reasoning…",
+  executing: "Executing…"
+};
+
 function setStatus(message: string): void {
   if (statusText) {
     statusText.textContent = message;
   }
+}
+
+function setPhase(phase: Phase, text?: string): void {
+  if (statusEl) {
+    statusEl.className = `status status-${phase}`;
+  }
+  setStatus(text ?? PHASE_TEXT[phase]);
 }
 
 function stripDataUrlPrefix(dataUrl: string): string {
@@ -595,6 +617,83 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
   }
 });
 
+// ── Screenshot review (raw vs redacted, side by side) ───────────────────────
+
+/**
+ * Build the locally-redacted variant of *imageData* for display only: every
+ * DOM-sensitive element bbox returned by the content script, plus every visual
+ * sensitivity hit (faces, OCR PII), is blacked out in a copy of the frame.
+ * Never sent anywhere — it is purely a live transparency preview for the user.
+ */
+async function buildRedactedPreview(
+  tabId: number,
+  imageData: ImageData,
+  visualHits: readonly VisualSensitivityHit[]
+): Promise<string | null> {
+  try {
+    const redactDebug = await trySend<RedactDebugResponse>(tabId, {
+      type: "SECURELINK_REDACT_DEBUG"
+    });
+    const mapById = new Map(redactDebug.structuralMap.map((n) => [n.id, n]));
+    const domHits = redactDebug.domHits.map((hit) => {
+      const node = mapById.get(hit.elementId);
+      const b = node?.bbox ?? { x: 0, y: 0, w: 0, h: 0 };
+      return {
+        bbox: {
+          x: b.x * redactDebug.devicePixelRatio,
+          y: b.y * redactDebug.devicePixelRatio,
+          w: b.w * redactDebug.devicePixelRatio,
+          h: b.h * redactDebug.devicePixelRatio
+        },
+        sensitivityClass: hit.sensitivityClass
+      };
+    });
+
+    const source = imageDataToCanvas(imageData);
+    const out = redact(source, [...domHits, ...visualHits], {
+      method: "black",
+      padding: 4
+    });
+    return out.toDataURL("image/png");
+  } catch (error) {
+    // No content script/repaintable frame yet — the raw panel still shows.
+    console.warn("SecureLink popup: redacted preview unavailable.", error);
+    return null;
+  }
+}
+
+let hasRedactedPreview = false;
+
+function showReviewPanel(
+  rawDataUrl: string,
+  redactedDataUrl: string | null
+): void {
+  if (!reviewPanel) {
+    return;
+  }
+  if (reviewRaw) {
+    reviewRaw.src = rawDataUrl;
+  }
+  hasRedactedPreview = Boolean(redactedDataUrl);
+  if (reviewRedacted && redactedDataUrl) {
+    reviewRedacted.src = redactedDataUrl;
+  }
+  const showRedacted = reviewToggle?.getAttribute("aria-pressed") === "true";
+  if (reviewRedactedBox) {
+    reviewRedactedBox.hidden = !showRedacted || !hasRedactedPreview;
+  }
+  reviewPanel.hidden = false;
+}
+
+reviewToggle?.addEventListener("click", () => {
+  const nowPressed = reviewToggle.getAttribute("aria-pressed") !== "true";
+  reviewToggle.setAttribute("aria-pressed", String(nowPressed));
+  reviewToggle.textContent = nowPressed ? "Hide redacted" : "Show redacted";
+  if (reviewRedactedBox) {
+    reviewRedactedBox.hidden = !nowPressed || !hasRedactedPreview;
+  }
+});
+
 // ── Measure-only popup stages (capture / ViT / self-verify) ─────────────────
 
 /**
@@ -604,12 +703,13 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
  */
 async function measureVisualStages(
   imageData: ImageData
-): Promise<{ vitInference: number; verify: number }> {
-  const result = { vitInference: 0, verify: 0 };
+): Promise<{ vitInference: number; verify: number; hits: VisualSensitivityHit[] }> {
+  const result = { vitInference: 0, verify: 0, hits: [] as VisualSensitivityHit[] };
 
   try {
     const stop = startTimer();
     const analysis = await runVisionAnalysis(imageData);
+    result.hits = analysis.hits as VisualSensitivityHit[];
     result.vitInference = stop();
     console.info(
       `[perf] vitInference ${result.vitInference.toFixed(1)} ms ` +
@@ -711,21 +811,19 @@ async function getOrCreateSessionId(tabId: number): Promise<string> {
 }
 
 activateButton?.addEventListener("click", async () => {
-  const task = "Activate agent";
+  const task = taskInput?.value.trim() || "Activate agent";
   const mode = await getMode();
 
-  console.info("SecureLink popup: activation requested.", { mode });
-  setStatus(
-    mode === "local-only"
-      ? "Local-only step: deciding with local heuristics..."
-      : "Capturing tab..."
-  );
+  console.info("SecureLink popup: activation requested.", { mode, task });
+  activateButton.disabled = true;
+  setPhase(mode === "local-only" ? "reasoning" : "capturing");
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
   if (!tab.id) {
     console.warn("SecureLink popup: no active tab found.");
-    setStatus("No active tab found.");
+    setPhase("idle", "No active tab found.");
+    activateButton.disabled = false;
     return;
   }
 
@@ -742,14 +840,9 @@ activateButton?.addEventListener("click", async () => {
       const screenshot = await captureVisibleTab();
       captureMs = captureStop();
 
-      if (capturePreview) {
-        capturePreview.src = screenshot.dataUrl;
-        capturePreview.hidden = false;
-      }
-
       // Measure-only: decode + ViT/visual analysis + self-verify so the overlay
       // and console show real numbers for every stage.
-      setStatus("Analyzing visual context...");
+      setPhase("reasoning", "Analyzing visual context…");
       const imageData = await dataUrlToImageData(screenshot.dataUrl);
       const visual = await measureVisualStages(imageData);
       await storePopupStageTimings(sessionId, {
@@ -757,6 +850,15 @@ activateButton?.addEventListener("click", async () => {
         vitInference: visual.vitInference,
         verify: visual.verify
       });
+
+      // Non-blocking: show raw then redacted, side by side, for the judge.
+      setPhase("reasoning", "Building redacted preview…");
+      const redactedDataUrl = await buildRedactedPreview(
+        tab.id,
+        imageData,
+        visual.hits
+      );
+      showReviewPanel(screenshot.dataUrl, redactedDataUrl);
       screenshotBase64 = screenshot.screenshotBase64;
     } else {
       // Local-only: no capture and no measure-only stages, so the overlay must
@@ -768,11 +870,7 @@ activateButton?.addEventListener("click", async () => {
       });
     }
 
-    setStatus(
-      mode === "local-only"
-        ? "Running local-only step..."
-        : "Sending page context..."
-    );
+    setPhase("reasoning");
     console.info("SecureLink popup: sending activation message to tab.", tab.id);
     const response = await sendActivationMessage(tab.id, tab, {
       type: "SECURELINK_ACTIVATE_AGENT",
@@ -784,18 +882,23 @@ activateButton?.addEventListener("click", async () => {
 
     console.info("SecureLink popup: received content response.", response);
     renderPerf(response.timings, null, null, response.errors);
-    setStatus(
-      response.ok
-        ? `Action executed on: ${response.title}`
-        : `Connection failed: ${response.error ?? "Unknown error"}`
-    );
+
+    if (response.ok) {
+      setPhase("executing", `Executed on ${response.title}`);
+      setTimeout(() => setPhase("idle", `Done — ${response.title}`), 1600);
+    } else {
+      setPhase("idle", `Could not run: ${response.error ?? "Unknown error"}`);
+    }
   } catch (error) {
     console.error("SecureLink popup: activation failed.", error);
-    setStatus(
+    setPhase(
+      "idle",
       error instanceof Error
         ? `Activation failed: ${error.message}`
         : "Activation failed."
     );
+  } finally {
+    activateButton.disabled = false;
   }
 });
 
