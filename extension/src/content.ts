@@ -1,9 +1,10 @@
 import { detectSensitiveDomElements, type ElementNode, type SensitiveHit } from "./dom-sensitivity.ts";
 import { resolveTokens, createRedactionTracker } from "./redaction.ts";
-import { createDeltaTracker, expandDeltaContext, type DeltaTracker } from "./delta.ts";
+import { createDeltaTracker, expandDeltaContext, assignStructuralIds, type DeltaTracker } from "./delta.ts";
 import {
   extractStructuralMap,
   findElementById,
+  hasFrameNodes,
   mergeDeltaNodes,
   STRUCTURAL_ID_ATTR,
   toElementNode
@@ -55,12 +56,14 @@ type AgentActivationResponse =
       title: string;
       action: AgentAction;
       timings?: PipelineTimings;
+      errors?: string[];
     }
   | {
       ok: false;
       title: string;
       error: string;
       timings?: PipelineTimings;
+      errors?: string[];
     };
 
 type PerfUpdateMessage = {
@@ -69,6 +72,7 @@ type PerfUpdateMessage = {
   timings: PipelineTimings;
   server: ServerTimings | null;
   metrics: PipelineMetrics;
+  errors?: string[];
 };
 
 type RedactDebugMessage = { type: "SECURELINK_REDACT_DEBUG" };
@@ -81,6 +85,9 @@ type RedactDebugResponse = {
 
 const AGENT_STEP_URL = "http://localhost:8000/agent/step";
 
+/** Abort the network round trip after this long (the server may be down). */
+const AGENT_REQUEST_TIMEOUT_MS = 30_000;
+
 console.info("SecureLink injected into:", document.title);
 
 // ── Session pipeline state (Phase 2 delta sync) ─────────────────────────────
@@ -91,7 +98,9 @@ const state = {
   cachedMap: null as ElementNode[] | null,
   redactor: createRedactionTracker(),
   delta: null as DeltaTracker | null,
-  observerAttached: false
+  observerAttached: false,
+  /** True after we've seen any iframe; force full extraction per step. */
+  hasFrames: false
 };
 
 async function readPopupStageTimings(sessionId: string): Promise<{
@@ -135,7 +144,9 @@ function ensureObserver(): void {
  * Build the structural map for this step. First capture in a session does a
  * full extraction; later steps re-extract only mutated elements (plus
  * parent/siblings) and merge the delta into the cached full map, so the server
- * always receives a complete, consistent map.
+ * always receives a complete, consistent map. Pages with iframes skip delta
+ * sync entirely: the top-document observer cannot see inside frames, so full
+ * extraction is the only correct choice there.
  */
 function collectStructuralMap(): {
   map: ElementNode[];
@@ -144,24 +155,31 @@ function collectStructuralMap(): {
   redactionIds: string[];
   /** Nodes that are candidates for sensitivity detection this step. */
   detectionNodes: ElementNode[];
+  /** Why delta was not used, when it wasn't. */
+  fullExtractionReason?: string;
 } {
   ensureObserver();
 
-  if (!state.cachedMap || state.sessionId === null) {
-    // First capture of a session: full extraction.
+  if (!state.cachedMap || state.sessionId === null || state.hasFrames) {
+    // First capture of a session (or iframe pages): full extraction.
     const map = extractStructuralMap(document);
     // Our own synthetic-id assignment mutates the DOM; discard those mutations
     // so the first delta collection only reflects real page changes.
     state.delta?.collectChangedElements();
 
     state.cachedMap = map;
+    state.hasFrames = hasFrameNodes(map);
+
     const redactionIds = map.map((node) => node.id);
     return {
       map,
       changedCount: map.length,
       deltaUsed: false,
       redactionIds,
-      detectionNodes: map
+      detectionNodes: map,
+      fullExtractionReason: state.hasFrames
+        ? "iframes present; container documents are not observable by the delta observer"
+        : undefined
     };
   }
 
@@ -178,27 +196,38 @@ function collectStructuralMap(): {
     };
   }
 
+  // Newly mounted elements (React-style commits) carry no synthetic id yet —
+  // assign one now (across the whole mounted subtree) so context expansion,
+  // re-extraction and redaction can find them. Elements that are gone are
+  // collected as removals for the merge.
+  assignStructuralIds(document, changedElements);
+
+  const removedIds = new Set(
+    changedElements
+      .filter((element) => !element.isConnected)
+      .map((element) => element.getAttribute(STRUCTURAL_ID_ATTR))
+      .filter((id): id is string => id !== null)
+  );
+
   const deltaIds = expandDeltaContext(changedElements);
+  const toProcess = new Set([...deltaIds, ...removedIds]);
 
   const updated: ElementNode[] = [];
-  const removedIds: string[] = [];
 
-  for (const id of deltaIds) {
+  for (const id of toProcess) {
     const element = findElementById(document, id);
 
-    if (!element) {
-      removedIds.push(id);
-    } else {
+    if (element) {
       updated.push(toElementNode(document, element));
     }
   }
 
-  const map = mergeDeltaNodes(state.cachedMap, updated, removedIds);
+  const map = mergeDeltaNodes(state.cachedMap, updated, Array.from(removedIds));
   state.cachedMap = map;
 
   return {
     map,
-    changedCount: deltaIds.length,
+    changedCount: toProcess.size,
     deltaUsed: true,
     redactionIds: updated.map((node) => node.id),
     detectionNodes: updated
@@ -376,13 +405,23 @@ async function sendToAgent(payload: AgentStepPayload): Promise<AgentStepResult> 
     task: payload.task
   });
 
-  const response = await fetch(AGENT_STEP_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AGENT_REQUEST_TIMEOUT_MS);
+
+  let response: Response;
+
+  try {
+    response = await fetch(AGENT_STEP_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`Agent request failed with ${response.status}`);
@@ -410,6 +449,7 @@ async function postPerfUpdate(message: PerfUpdateMessage): Promise<void> {
         timings: message.timings,
         server: message.server,
         metrics: message.metrics,
+        errors: message.errors ?? [],
         ts: Date.now()
       }
     });
@@ -479,49 +519,116 @@ chrome.runtime.onMessage.addListener(
 
         let server: ServerTimings | null = null;
         let aggregate: PipelineTimings | null = null;
+        const errors: string[] = [];
 
-        // Stage: structural map (full on first step, delta afterwards).
-        let stop = startTimer();
-        const collected = collectStructuralMap();
-        timings.structuralMap = stop();
+        const stage = async <T>(
+          name: string,
+          run: () => T | Promise<T>
+        ): Promise<T | undefined> => {
+          const stop = startTimer();
+          try {
+            return await run();
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : `Stage '${name}' failed`;
+            errors.push(`${name}: ${message}`);
+            console.error(`SecureLink stage '${name}' failed:`, error);
+            return undefined;
+          } finally {
+            timings[name as keyof PipelineTimings] = stop();
+          }
+        };
 
         const metrics: PipelineMetrics = {
-          changedElements: collected.changedCount,
-          totalElements: collected.map.length,
-          deltaUsed: collected.deltaUsed,
+          changedElements: 0,
+          totalElements: 0,
+          deltaUsed: false,
           step: state.step,
           stage: "structuralMap"
         };
 
+        // Stage: structural map (full on first step, delta afterwards).
+        const collected = await stage("structuralMap", () => collectStructuralMap());
+
+        if (!collected) {
+          // The map is unusable — do not leak an unredacted/partial payload.
+          await postPerfUpdate({
+            type: "SECURELINK_PERF_UPDATE",
+            sessionId: message.sessionId,
+            timings: normaliseTimings(timings),
+            server,
+            metrics,
+            errors
+          });
+          sendResponse({
+            ok: false,
+            title: document.title,
+            error: errors.join("; ") || "Failed to build the structural map.",
+            timings: aggregate ?? normaliseTimings(timings),
+            errors
+          });
+          return;
+        }
+
+        metrics.changedElements = collected.changedCount;
+        metrics.totalElements = collected.map.length;
+        metrics.deltaUsed = collected.deltaUsed;
+        if (collected.fullExtractionReason) {
+          metrics.fullExtractionReason = collected.fullExtractionReason;
+        }
+
         // Stage: sensitive element detection (DOM). Delta steps only scan the
         // changed elements (plus siblings/parent) instead of the full map.
-        stop = startTimer();
-        const domHits = detectSensitiveDomElements(collected.detectionNodes);
-        timings.sensitiveDetection = stop();
+        await stage("sensitiveDetection", () => {
+          detectSensitiveDomElements(collected.detectionNodes);
+        });
 
         // Stage: redaction — tracker keeps tokens stable; delta steps only
         // re-tokenize the changed ids.
-        stop = startTimer();
-        state.redactor.redactNodes(collected.map, collected.redactionIds);
-        timings.redaction = stop();
+        await stage("redaction", () => {
+          state.redactor.redactNodes(collected.map, collected.redactionIds);
+        });
 
         // Stage: network round trip (transport + server processing).
-        stop = startTimer();
-        const result = await sendToAgent({
-          session_id: message.sessionId,
-          structural_map: collected.map,
-          screenshot_base64: message.screenshotBase64,
-          task: message.task ?? "Activate agent"
-        });
-        timings.networkRoundTrip = stop();
-        server = result.timings ?? null;
+        const result = await stage("networkRoundTrip", () =>
+          sendToAgent({
+            session_id: message.sessionId,
+            structural_map: collected.map,
+            screenshot_base64: message.screenshotBase64,
+            task: message.task ?? "Activate agent"
+          })
+        );
+        if (result) {
+          server = result.timings ?? null;
+        }
+
+        if (!result) {
+          // Server unreachable / timed out / rejected. Surface it, don't hang.
+          const lastError = errors[errors.length - 1] ?? "Agent server did not respond";
+          await postPerfUpdate({
+            type: "SECURELINK_PERF_UPDATE",
+            sessionId: message.sessionId,
+            timings: normaliseTimings(timings),
+            server,
+            metrics,
+            errors
+          });
+          sendResponse({
+            ok: false,
+            title: document.title,
+            error: lastError,
+            timings: normaliseTimings(timings),
+            errors
+          });
+          return;
+        }
 
         // Stage: execute the returned action.
-        stop = startTimer();
-        if (result.action) {
-          await executeAction(result.action, state.redactor.getRedactionKey());
-        }
-        timings.actionExecution = stop();
+        await stage("actionExecution", async () => {
+          if (result.action) {
+            await executeAction(result.action, state.redactor.getRedactionKey());
+          }
+        });
 
         aggregate = normaliseTimings(timings);
         logPerStage(timings, metrics);
@@ -532,7 +639,8 @@ chrome.runtime.onMessage.addListener(
           sessionId: message.sessionId,
           timings: aggregate,
           server,
-          metrics
+          metrics,
+          errors
         });
 
         console.info(
@@ -540,15 +648,35 @@ chrome.runtime.onMessage.addListener(
             `(deltaUsed=${metrics.deltaUsed}, step=${metrics.step})`
         );
 
+        if (errors.length > 0) {
+          console.warn("SecureLink degraded with errors:", errors);
+        }
+
         if (result.action) {
-          sendResponse({ ok: true, title: document.title, action: result.action, timings: aggregate });
+          sendResponse({
+            ok: true,
+            title: document.title,
+            action: result.action,
+            timings: aggregate,
+            errors
+          });
         } else {
           const messageText = result.message ?? "No actionable result from the agent.";
-          sendResponse({ ok: false, title: document.title, error: messageText, timings: aggregate });
+          sendResponse({
+            ok: false,
+            title: document.title,
+            error: messageText,
+            timings: aggregate,
+            errors
+          });
         }
       } catch (error) {
         const messageText =
-          error instanceof Error ? error.message : "Unknown agent activation error";
+          error instanceof Error && error.name === "AbortError"
+            ? `Agent server did not respond within ${AGENT_REQUEST_TIMEOUT_MS / 1000}s`
+            : error instanceof Error
+              ? error.message
+              : "Unknown agent activation error";
 
         console.error("SecureLink agent flow failed:", error);
         sendResponse({ ok: false, title: document.title, error: messageText });

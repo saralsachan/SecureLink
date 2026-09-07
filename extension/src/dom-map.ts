@@ -21,8 +21,12 @@ export const STRUCTURAL_ELEMENT_SELECTOR = [
   "h5",
   "h6",
   "select",
-  "textarea"
+  "textarea",
+  "iframe"
 ].join(",");
+
+/** Maximum same-origin iframe nesting we descend into during extraction. */
+export const MAX_FRAME_DEPTH = 4;
 
 let nextSyntheticElementId = 0;
 
@@ -98,6 +102,10 @@ function inferRole(element: HTMLElement): string | null {
 
   if (tag === "form") {
     return "form";
+  }
+
+  if (tag === "iframe") {
+    return "iframe";
   }
 
   if (/^h[1-6]$/.test(tag)) {
@@ -198,11 +206,94 @@ export function toElementNode(doc: Document, element: HTMLElement): ElementNode 
   };
 }
 
-/** Full structural map extraction for the given document. */
+/**
+ * True when a merged map contains any iframe (or iframe-resident) node.
+ * Content scripts use this to decide whether delta sync is safe: iframe
+ * documents are not tracked by the top-document MutationObserver, so any map
+ * that spans frames falls back to full extraction per step.
+ */
+export function hasFrameNodes(map: readonly ElementNode[]): boolean {
+  return map.some((node) => node.tag === "iframe" || (node.frameDepth ?? 0) > 0);
+}
+
+/**
+ * Full structural map extraction for the given document. Same-origin iframes
+ * are traversed recursively (bounded by {@link MAX_FRAME_DEPTH}); inner
+ * element bboxes are offset by their iframe chain so coordinates stay relative
+ * to the top viewport (the screenshot). Cross-origin frames are recorded as
+ * iframe nodes with `crossOrigin: true` — their contents are not inspectable
+ * and are only covered by the screenshot-based visual path.
+ */
 export function extractStructuralMap(doc: Document): ElementNode[] {
-  return Array.from(doc.querySelectorAll<HTMLElement>(STRUCTURAL_ELEMENT_SELECTOR))
-    .filter((element) => isVisibleInViewport(doc, element))
-    .map((element) => toElementNode(doc, element));
+  const visitedDocs = new WeakSet<Document>();
+  const nodes: ElementNode[] = [];
+  collectMapNodes(doc, visitedDocs, nodes, 0, 0, 0);
+  return nodes;
+}
+
+function collectMapNodes(
+  doc: Document,
+  visitedDocs: WeakSet<Document>,
+  out: ElementNode[],
+  offsetX: number,
+  offsetY: number,
+  frameDepth: number
+): void {
+  if (frameDepth > MAX_FRAME_DEPTH || visitedDocs.has(doc)) {
+    return;
+  }
+  visitedDocs.add(doc);
+
+  for (const element of Array.from(
+    doc.querySelectorAll<HTMLElement>(STRUCTURAL_ELEMENT_SELECTOR)
+  )) {
+    if (!isVisibleInViewport(doc, element)) {
+      continue;
+    }
+
+    const node = toElementNode(doc, element);
+    node.bbox.x += offsetX;
+    node.bbox.y += offsetY;
+    node.frameDepth = frameDepth;
+
+    if (element.tagName.toLowerCase() === "iframe") {
+      collectIframeContents(element as HTMLIFrameElement, node, visitedDocs, out);
+      node.crossOrigin ??= false;
+    }
+
+    out.push(node);
+  }
+}
+
+function collectIframeContents(
+  iframe: HTMLIFrameElement,
+  frameNode: ElementNode,
+  visitedDocs: WeakSet<Document>,
+  out: ElementNode[]
+): void {
+  let contentDoc: Document | null = null;
+
+  try {
+    contentDoc = iframe.contentDocument;
+  } catch {
+    // Cross-origin iframe: contents are not script-accessible.
+    frameNode.crossOrigin = true;
+    return;
+  }
+
+  if (!contentDoc) {
+    // Same-origin but not loaded yet — nothing to collect this pass.
+    return;
+  }
+
+  collectMapNodes(
+    contentDoc,
+    visitedDocs,
+    out,
+    frameNode.bbox.x,
+    frameNode.bbox.y,
+    (frameNode.frameDepth ?? 0) + 1
+  );
 }
 
 /**
@@ -216,7 +307,9 @@ export function findElementById(doc: Document, id: string): HTMLElement | null {
 /**
  * Merge freshly re-extracted delta nodes into a cached full map (Phase 2).
  * Updated nodes replace their previous entries (matched by id); removed ids
- * are dropped. Order of the cached map is preserved.
+ * are dropped; *new* ids (framework-mounted elements that were not in the
+ * cached map) are appended so the map handed to the server stays complete.
+ * Order of the cached map is preserved.
  */
 export function mergeDeltaNodes(
   cached: readonly ElementNode[],
@@ -225,7 +318,13 @@ export function mergeDeltaNodes(
 ): ElementNode[] {
   const removed = new Set(removedIds);
   const byId = new Map(updated.map((node) => [node.id, node]));
-  return cached.filter((node) => !removed.has(node.id)).map((node) => byId.get(node.id) ?? node);
+  const cachedIds = new Set(cached.map((node) => node.id));
+  const fresh = updated.filter((node) => !cachedIds.has(node.id) && !removed.has(node.id));
+
+  return [
+    ...cached.filter((node) => !removed.has(node.id)).map((node) => byId.get(node.id) ?? node),
+    ...fresh
+  ];
 }
 
 export type { BoundingBox };

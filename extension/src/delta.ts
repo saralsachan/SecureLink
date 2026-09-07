@@ -8,7 +8,7 @@
  * re-extract only the changed elements (plus parent/siblings for context)
  * instead of re-scanning the whole document.
  */
-import { STRUCTURAL_ELEMENT_SELECTOR } from "./dom-map.ts";
+import { STRUCTURAL_ID_ATTR, STRUCTURAL_ELEMENT_SELECTOR, toElementNode } from "./dom-map.ts";
 
 export const DELTA_MAX_TRACKED_ELEMENTS = 1000;
 
@@ -145,9 +145,32 @@ export function createDeltaTracker(): DeltaTracker {
 }
 
 /**
- * Expand *changed* elements to include their immediate parent and siblings for
- * context, restricted to elements that are currently in the structural map.
- * Returns unique element ids.
+ * Assign synthetic structural ids to any connected structural element in *roots*
+ * that does not have one yet. Framework SPAs (React, Vue, …) mount whole
+ * subtrees at once; the observer only records the subroot, so descendants need
+ * ids before context expansion can find them.
+ */
+export function assignStructuralIds(doc: Document, roots: readonly HTMLElement[]): void {
+  for (const root of roots) {
+    if (!root.isConnected) {
+      continue;
+    }
+    const candidates = [
+      root,
+      ...Array.from(root.querySelectorAll<HTMLElement>(STRUCTURAL_ELEMENT_SELECTOR))
+    ];
+    for (const element of candidates) {
+      if (element.matches(STRUCTURAL_ELEMENT_SELECTOR) && !element.getAttribute(STRUCTURAL_ID_ATTR)) {
+        toElementNode(doc, element);
+      }
+    }
+  }
+}
+
+/**
+ * Expand *changed* elements to include their structural descendants, immediate
+ * parent and siblings for context, restricted to elements that are currently in
+ * the structural map. Returns unique element ids.
  */
 export function expandDeltaContext(
   changedElements: readonly HTMLElement[]
@@ -157,6 +180,11 @@ export function expandDeltaContext(
   for (const element of changedElements) {
     if (element.isConnected) {
       expanded.add(element);
+      for (const descendant of element.querySelectorAll<HTMLElement>(
+        STRUCTURAL_ELEMENT_SELECTOR
+      )) {
+        expanded.add(descendant);
+      }
     } else {
       // Removed from the DOM: keep its parent as context so the merge step can
       // drop the stale entry.

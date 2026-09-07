@@ -10,6 +10,7 @@ import {
   type PipelineTimings,
   type ServerTimings
 } from "./pipeline-timing.ts";
+import { withTimeout } from "./async-utils.ts";
 
 const activateButton = document.querySelector<HTMLButtonElement>("#activate-agent");
 const visionButton = document.querySelector<HTMLButtonElement>("#vision-self-test");
@@ -29,6 +30,7 @@ const redactKeyCount = document.querySelector<HTMLSpanElement>("#redact-key-coun
 const perfMeta = document.querySelector<HTMLDivElement>("#perf-meta");
 const perfTableBody = document.querySelector<HTMLTableSectionElement>("#perf-table-body");
 const perfTotal = document.querySelector<HTMLTableHeaderCellElement>("#perf-total");
+const perfError = document.querySelector<HTMLDivElement>("#perf-error");
 
 type RedactDebugResponse = {
   structuralMap: ElementNode[];
@@ -49,6 +51,7 @@ type ActivationResponse = {
   action?: unknown;
   error?: string;
   timings?: PipelineTimings;
+  errors?: string[];
 };
 
 type PerfUpdateMessage = {
@@ -57,6 +60,7 @@ type PerfUpdateMessage = {
   timings: PipelineTimings;
   server: ServerTimings | null;
   metrics: PipelineMetrics;
+  errors?: string[];
 };
 
 const STAGE_ROWS: Array<{ key: keyof PipelineTimings; label: string }> = [
@@ -188,8 +192,14 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const MESSAGE_TIMEOUT_MS = 60_000;
+
 async function trySend<T>(tabId: number, message: unknown): Promise<T> {
-  return chrome.tabs.sendMessage<typeof message, T>(tabId, message);
+  return withTimeout<T>(
+    chrome.tabs.sendMessage<typeof message, T>(tabId, message),
+    MESSAGE_TIMEOUT_MS,
+    "The page did not respond within 60s — the agent may be stalled."
+  );
 }
 
 async function sendActivationMessage(
@@ -323,10 +333,32 @@ async function runVisionSelfTest(): Promise<VisionSelfTestResult> {
 
 const LAST_PERF_EVENT: PerfUpdateMessage | null = null;
 
+function renderErrors(errors: readonly string[] | null | undefined): void {
+  if (!perfError) {
+    return;
+  }
+
+  if (!errors || errors.length === 0) {
+    perfError.hidden = true;
+    perfError.replaceChildren();
+    return;
+  }
+
+  const list = document.createElement("ul");
+  for (const error of errors) {
+    const li = document.createElement("li");
+    li.textContent = error;
+    list.appendChild(li);
+  }
+  perfError.hidden = false;
+  perfError.replaceChildren(list);
+}
+
 function renderPerf(
   timings: PipelineTimings | null | undefined,
   server: ServerTimings | null | undefined,
-  metrics: PipelineMetrics | null | undefined
+  metrics: PipelineMetrics | null | undefined,
+  errors?: string[] | null
 ): void {
   if (!perfTableBody || !perfTotal) {
     return;
@@ -377,11 +409,14 @@ function renderPerf(
     if (metrics) {
       perfMeta.textContent =
         `Step ${metrics.step} · ${metrics.deltaUsed ? "delta" : "full"} · ` +
-        `${metrics.changedElements} changed / ${metrics.totalElements} total`;
+        `${metrics.changedElements} changed / ${metrics.totalElements} total` +
+        (metrics.fullExtractionReason ? ` · ${metrics.fullExtractionReason}` : "");
     } else {
       perfMeta.textContent = `Total ${Math.round(total)} ms end-to-end`;
     }
   }
+
+  renderErrors(errors ?? metrics?.errors);
 }
 
 async function currentTabSessionId(): Promise<string | null> {
@@ -405,10 +440,10 @@ async function renderLastPerfForCurrentTab(): Promise<void> {
 
     const stored = await chrome.storage.session.get(perfKey);
     const value = stored?.[perfKey] as
-      | { timings?: PipelineTimings; server?: ServerTimings | null; metrics?: PipelineMetrics }
+      | { timings?: PipelineTimings; server?: ServerTimings | null; metrics?: PipelineMetrics; errors?: string[] }
       | undefined;
 
-    renderPerf(value?.timings, value?.server, value?.metrics);
+    renderPerf(value?.timings, value?.server, value?.metrics, value?.errors);
   } catch {
     // Non-fatal: the overlay just stays on its empty state.
   }
@@ -426,7 +461,7 @@ chrome.runtime.onMessage.addListener((message: unknown) => {
     return;
   }
 
-  renderPerf(perfMessage.timings, perfMessage.server, perfMessage.metrics);
+  renderPerf(perfMessage.timings, perfMessage.server, perfMessage.metrics, perfMessage.errors);
 });
 
 // ── Measure-only popup stages (capture / ViT / self-verify) ─────────────────
@@ -591,7 +626,7 @@ activateButton?.addEventListener("click", async () => {
     });
 
     console.info("SecureLink popup: received content response.", response);
-    renderPerf(response.timings, null, null);
+    renderPerf(response.timings, null, null, response.errors);
     setStatus(
       response.ok
         ? `Action executed on: ${response.title}`

@@ -235,6 +235,10 @@ class StructuralElement(BaseModel):
     display: str | None = None
     visibility: str | None = None
     contenteditable: str | None = None
+    frame_depth: int | None = None
+    frameDepth: int | None = None
+    cross_origin: bool | None = None
+    crossOrigin: bool | None = None
 
 
 class AnalyzeRequest(BaseModel):

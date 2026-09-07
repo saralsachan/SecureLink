@@ -164,6 +164,25 @@ img[hidden] {
   color: #53606f;
 }
 
+.perf-error {
+  margin: 0 10px 8px;
+  padding: 6px 8px;
+  border: 1px solid #f3c6c6;
+  border-radius: 4px;
+  background: #fdf1f1;
+  color: #a33;
+  font-size: 11px;
+}
+
+.perf-error ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.perf-error li {
+  margin: 2px 0;
+}
+
 .perf-table {
   width: 100%;
   border-collapse: collapse;

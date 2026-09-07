@@ -40,6 +40,10 @@ export type PipelineMetrics = {
   deltaUsed: boolean;
   step: number;
   stage: string;
+  /** Why a step used full extraction instead of delta (e.g. iframe pages). */
+  fullExtractionReason?: string;
+  /** Non-fatal stage failures collected this step (graceful degradation). */
+  errors?: string[];
 };
 
 export const PIPELINE_STAGE_KEYS = [

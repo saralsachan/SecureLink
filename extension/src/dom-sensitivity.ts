@@ -15,6 +15,18 @@ export type ElementNode = {
   autocomplete: string | null;
   placeholder: string | null;
   value: string | null;
+  /**
+   * Cross-document depth of the element's owning document: 0 for the top
+   * document, 1 for a direct same-origin iframe, etc. Present only when the
+   * element lives inside an iframe subtree.
+   */
+  frameDepth?: number;
+  /**
+   * True when the node is an <iframe> whose content could not be introspected
+   * (cross-origin). The iframe itself is still listed so the model knows it
+   * exists; its contents are handled by the screenshot path instead.
+   */
+  crossOrigin?: boolean;
 };
 
 export type SensitiveClass =

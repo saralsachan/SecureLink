@@ -1,19 +1,17 @@
 import * as ort from "onnxruntime-web";
-import type { BoundingBox } from "./dom-sensitivity.ts";
-
-export type FaceDetection = {
-  bbox: BoundingBox;
-  confidence: number;
-};
+import {
+  BOX_STRIDE,
+  MAX_DETECTIONS,
+  parseBlazeFaceBoxes,
+  type FaceDetection
+} from "./blazeface-parse.ts";
 
 const MODEL_RELATIVE_URL = new URL("../models/blaze_face.onnx", self.location.href).href;
 const MODEL_SIZE = 128;
 const INPUT_NAME = "image";
 const OUTPUT_NAME = "selectedBoxes";
 const CONF_THRESHOLD = 0.6;
-const MAX_DETECTIONS = 4;
 const IOU_THRESHOLD = 0.3;
-const FACE_CONFIDENCE = 0.9;
 
 function ortWasmPath(): string {
   return new URL("./ort/", self.location.href).href;
@@ -85,31 +83,9 @@ export async function detectFaces(imageData: ImageData): Promise<FaceDetection[]
   };
 
   const results = await session.run(feeds);
-  const boxes = results[OUTPUT_NAME].data as Float32Array;
-  const dims = results[OUTPUT_NAME].dims;
-  const detectionCount = dims.length >= 2 ? dims[1] : 0;
-  const faces: FaceDetection[] = [];
+  const output = results[OUTPUT_NAME];
+  const boxes = output?.data as Float32Array | undefined;
+  const dims = output?.dims as readonly number[] | undefined;
 
-  for (let i = 0; i < detectionCount; i += 1) {
-    const row = boxes.subarray(i * 16, i * 16 + 16);
-
-    if (row[0] === 0 && row[1] === 0 && row[2] === 0 && row[3] === 0) {
-      continue;
-    }
-
-    const bbox: BoundingBox = {
-      x: Math.round(row[0] * imageData.width),
-      y: Math.round(row[1] * imageData.height),
-      w: Math.round((row[2] - row[0]) * imageData.width),
-      h: Math.round((row[3] - row[1]) * imageData.height)
-    };
-
-    if (bbox.w <= 0 || bbox.h <= 0) {
-      continue;
-    }
-
-    faces.push({ bbox, confidence: FACE_CONFIDENCE });
-  }
-
-  return faces;
+  return parseBlazeFaceBoxes(boxes, dims, imageData.width, imageData.height);
 }

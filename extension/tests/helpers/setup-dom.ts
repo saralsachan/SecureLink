@@ -22,11 +22,27 @@ const DOM_GLOBALS = [
   "HTMLButtonElement",
   "HTMLFormElement",
   "HTMLAnchorElement",
+  "HTMLIFrameElement",
   "MutationObserver",
   "Event",
   "MouseEvent",
   "KeyboardEvent",
 ];
+
+/**
+ * Give *win* deterministic layout so visibility checks behave like a rendered
+ * page. Call again on any extra window (e.g. an iframe's inner window).
+ */
+export function installRectStub(win: unknown): void {
+  const anyWindow = win as { HTMLElement: { prototype: HTMLElement } };
+  anyWindow.HTMLElement.prototype.getBoundingClientRect = function () {
+    const cls = String((this as Element).className ?? "");
+    if (/hidden|offscreen/.test(cls)) {
+      return { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0, right: 0, bottom: 0 } as DOMRect;
+    }
+    return { x: 40, y: 40, width: 180, height: 36, left: 40, top: 40, right: 220, bottom: 76 } as DOMRect;
+  };
+}
 
 export function setupDom(html: string, url = "http://localhost/test.html"): DomSetup {
   const dom = new JSDOM(html, {
@@ -49,14 +65,7 @@ export function setupDom(html: string, url = "http://localhost/test.html"): DomS
   anyWindow.CSS = css;
   (globalThis as unknown as Record<string, unknown>).CSS = anyWindow.CSS;
 
-  (anyWindow.HTMLElement as { prototype: HTMLElement }).prototype.getBoundingClientRect =
-    function () {
-      const cls = String((this as Element).className ?? "");
-      if (/hidden|offscreen/.test(cls)) {
-        return { x: 0, y: 0, width: 0, height: 0, left: 0, top: 0, right: 0, bottom: 0 } as DOMRect;
-      }
-      return { x: 40, y: 40, width: 180, height: 36, left: 40, top: 40, right: 220, bottom: 76 } as DOMRect;
-    };
+  installRectStub(dom.window);
 
   return { doc: (anyWindow.document as Document), win: dom.window as unknown as Window & typeof globalThis };
 }

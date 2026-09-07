@@ -83,6 +83,28 @@ describe("mergeDeltaNodes", () => {
     const cached: ElementNode[] = [node("a", "h1"), node("b", "input")];
     assert.deepEqual(mergeDeltaNodes(cached, [], []), cached);
   });
+
+  test("appends freshly mounted ids so the server map stays complete", () => {
+    const cached: ElementNode[] = [node("a", "h1"), node("b", "input")];
+    const mounted = [node("c", "form"), node("d", "input", "Email")];
+    const merged = mergeDeltaNodes(cached, mounted, []);
+
+    assert.deepEqual(
+      merged.map((n) => n.id),
+      ["a", "b", "c", "d"]
+    );
+    assert.equal(merged[2].tag, "form");
+    assert.equal(merged[3].ariaLabel, "Email");
+  });
+
+  test("a removed id is not resurrected as fresh", () => {
+    const cached: ElementNode[] = [node("a", "h1"), node("b", "input")];
+    const merged = mergeDeltaNodes(cached, [node("b", "input")], ["b"]);
+    assert.deepEqual(
+      merged.map((n) => n.id),
+      ["a"]
+    );
+  });
 });
 
 describe("findElementById", () => {
