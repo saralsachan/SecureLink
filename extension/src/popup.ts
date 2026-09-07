@@ -11,12 +11,25 @@ import {
   type ServerTimings
 } from "./pipeline-timing.ts";
 import { withTimeout } from "./async-utils.ts";
+import {
+  auditStorageKey,
+  formatAuditTime,
+  readAuditEntries,
+  type AuditLogEntry
+} from "./audit-log.ts";
+import type { AgentMode } from "./local-heuristics.ts";
 
 const activateButton = document.querySelector<HTMLButtonElement>("#activate-agent");
 const visionButton = document.querySelector<HTMLButtonElement>("#vision-self-test");
 const redactionDebugButton = document.querySelector<HTMLButtonElement>(
   "#redaction-debug"
 );
+const localOnlyToggle =
+  document.querySelector<HTMLInputElement>("#local-only-toggle");
+const modeHint = document.querySelector<HTMLParagraphElement>("#mode-hint");
+const auditList = document.querySelector<HTMLUListElement>("#audit-list");
+const auditEmpty = document.querySelector<HTMLParagraphElement>("#audit-empty");
+const auditClear = document.querySelector<HTMLButtonElement>("#audit-clear");
 const capturePreview =
   document.querySelector<HTMLImageElement>("#capture-preview");
 const statusText = document.querySelector<HTMLParagraphElement>("#status");
@@ -43,6 +56,7 @@ type ActivationRequest = {
   sessionId: string;
   screenshotBase64: string;
   task: string;
+  mode?: AgentMode;
 };
 
 type ActivationResponse = {
@@ -451,17 +465,134 @@ async function renderLastPerfForCurrentTab(): Promise<void> {
 
 void renderLastPerfForCurrentTab();
 
+// ── Local-only mode + audit log ─────────────────────────────────────────────
+
+const LOCAL_ONLY_KEY = "securelink:localOnly";
+
+async function getMode(): Promise<AgentMode> {
+  try {
+    const stored = await chrome.storage.local.get(LOCAL_ONLY_KEY);
+    return stored?.[LOCAL_ONLY_KEY] === true ? "local-only" : "automatic";
+  } catch {
+    return "automatic";
+  }
+}
+
+function applyModeToUi(mode: AgentMode): void {
+  if (localOnlyToggle) {
+    localOnlyToggle.checked = mode === "local-only";
+  }
+  if (modeHint) {
+    modeHint.textContent =
+      mode === "local-only"
+        ? "Local-only: no data leaves this browser; deterministic heuristics only."
+        : "Automatic: full detection + redaction + server-driven actions.";
+  }
+}
+
+localOnlyToggle?.addEventListener("change", async () => {
+  const mode: AgentMode = localOnlyToggle.checked ? "local-only" : "automatic";
+  applyModeToUi(mode);
+  setStatus(
+    mode === "local-only"
+      ? "Local-only mode enabled — no network calls."
+      : "Automatic mode enabled."
+  );
+  try {
+    await chrome.storage.local.set({ [LOCAL_ONLY_KEY]: mode === "local-only" });
+  } catch {
+    console.warn("SecureLink popup: could not persist mode preference.");
+  }
+});
+
+function renderAudit(entries: readonly AuditLogEntry[]): void {
+  if (!auditList || !auditEmpty) {
+    return;
+  }
+
+  if (entries.length === 0) {
+    auditList.replaceChildren();
+    auditEmpty.hidden = false;
+    return;
+  }
+
+  auditEmpty.hidden = true;
+  const fragment = document.createDocumentFragment();
+
+  for (const entry of entries) {
+    const item = document.createElement("li");
+    item.className = `audit-entry audit-${entry.kind}`;
+
+    const time = document.createElement("span");
+    time.className = "audit-time";
+    time.textContent = formatAuditTime(entry.ts);
+
+    const badge = document.createElement("span");
+    badge.className = "audit-kind";
+    badge.textContent = entry.kind;
+
+    const text = document.createElement("span");
+    text.className = "audit-text";
+    text.textContent = entry.text;
+
+    item.append(time, badge, text);
+    fragment.appendChild(item);
+  }
+
+  auditList.replaceChildren(fragment);
+}
+
+async function renderAuditForCurrentTab(): Promise<void> {
+  try {
+    const sessionId = await currentTabSessionId();
+    const entries = sessionId ? await readAuditEntries(sessionId) : [];
+    renderAudit(entries);
+  } catch {
+    // Non-fatal: the panel just stays on its empty state.
+  }
+}
+
+void renderAuditForCurrentTab();
+void getMode().then(applyModeToUi);
+
+auditClear?.addEventListener("click", async () => {
+  const sessionId = await currentTabSessionId();
+
+  if (!sessionId) {
+    return;
+  }
+
+  try {
+    await chrome.storage.session.remove(auditStorageKey(sessionId));
+  } catch {
+    console.warn("SecureLink popup: could not clear audit log.");
+  }
+  renderAudit([]);
+});
+
 chrome.runtime.onMessage.addListener((message: unknown) => {
   if (typeof message !== "object" || message === null) {
     return;
   }
+
   const perfMessage = message as Partial<PerfUpdateMessage>;
 
-  if (perfMessage.type !== "SECURELINK_PERF_UPDATE") {
+  if (perfMessage.type === "SECURELINK_PERF_UPDATE") {
+    renderPerf(perfMessage.timings, perfMessage.server, perfMessage.metrics, perfMessage.errors);
     return;
   }
 
-  renderPerf(perfMessage.timings, perfMessage.server, perfMessage.metrics, perfMessage.errors);
+  const auditMessage = message as Partial<{ type: string; sessionId: string }>;
+
+  if (auditMessage.type === "SECURELINK_AUDIT_UPDATE") {
+    void (async () => {
+      const sessionId = await currentTabSessionId();
+
+      if (sessionId && sessionId === auditMessage.sessionId) {
+        await renderAuditForCurrentTab();
+      }
+    })();
+  }
 });
 
 // ── Measure-only popup stages (capture / ViT / self-verify) ─────────────────
@@ -581,9 +712,14 @@ async function getOrCreateSessionId(tabId: number): Promise<string> {
 
 activateButton?.addEventListener("click", async () => {
   const task = "Activate agent";
+  const mode = await getMode();
 
-  console.info("SecureLink popup: activation requested.");
-  setStatus("Capturing tab...");
+  console.info("SecureLink popup: activation requested.", { mode });
+  setStatus(
+    mode === "local-only"
+      ? "Local-only step: deciding with local heuristics..."
+      : "Capturing tab..."
+  );
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -596,33 +732,54 @@ activateButton?.addEventListener("click", async () => {
   try {
     const sessionId = await getOrCreateSessionId(tab.id);
 
-    const captureStop = startTimer();
-    const screenshot = await captureVisibleTab();
-    const captureMs = captureStop();
+    // Local-only mode makes zero network calls and does not need a screenshot,
+    // so the capture + measure-only stages are skipped entirely.
+    let screenshotBase64 = "";
+    let captureMs = 0;
 
-    if (capturePreview) {
-      capturePreview.src = screenshot.dataUrl;
-      capturePreview.hidden = false;
+    if (mode === "automatic") {
+      const captureStop = startTimer();
+      const screenshot = await captureVisibleTab();
+      captureMs = captureStop();
+
+      if (capturePreview) {
+        capturePreview.src = screenshot.dataUrl;
+        capturePreview.hidden = false;
+      }
+
+      // Measure-only: decode + ViT/visual analysis + self-verify so the overlay
+      // and console show real numbers for every stage.
+      setStatus("Analyzing visual context...");
+      const imageData = await dataUrlToImageData(screenshot.dataUrl);
+      const visual = await measureVisualStages(imageData);
+      await storePopupStageTimings(sessionId, {
+        capture: captureMs,
+        vitInference: visual.vitInference,
+        verify: visual.verify
+      });
+      screenshotBase64 = screenshot.screenshotBase64;
+    } else {
+      // Local-only: no capture and no measure-only stages, so the overlay must
+      // not replay stale popup-stage numbers from an earlier automatic run.
+      await storePopupStageTimings(sessionId, {
+        capture: 0,
+        vitInference: 0,
+        verify: 0
+      });
     }
 
-    // Measure-only: decode + ViT/visual analysis + self-verify so the overlay
-    // and console show real numbers for every stage.
-    setStatus("Analyzing visual context...");
-    const imageData = await dataUrlToImageData(screenshot.dataUrl);
-    const visual = await measureVisualStages(imageData);
-    await storePopupStageTimings(sessionId, {
-      capture: captureMs,
-      vitInference: visual.vitInference,
-      verify: visual.verify
-    });
-
-    setStatus("Sending page context...");
+    setStatus(
+      mode === "local-only"
+        ? "Running local-only step..."
+        : "Sending page context..."
+    );
     console.info("SecureLink popup: sending activation message to tab.", tab.id);
     const response = await sendActivationMessage(tab.id, tab, {
       type: "SECURELINK_ACTIVATE_AGENT",
       sessionId,
-      screenshotBase64: screenshot.screenshotBase64,
-      task
+      screenshotBase64,
+      task,
+      mode
     });
 
     console.info("SecureLink popup: received content response.", response);

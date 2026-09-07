@@ -107,6 +107,17 @@ export function getRedactionKey(): ReadonlyMap<string, string> {
 const REDACTED_TOKEN_RE = /\[REDACTED_[A-Z0-9_]+(?:_\d+)?\]/g;
 
 /**
+ * Return every `[REDACTED_*]` token embedded in *text* (empty when there is
+ * none). Used to decide which fields were actually redacted for the audit log.
+ */
+export function extractRedactionTokens(text: string | null | undefined): string[] {
+  if (!text) {
+    return [];
+  }
+  return text.match(REDACTED_TOKEN_RE) ?? [];
+}
+
+/**
  * Resolve every `[REDACTED_*]` token in *value* to its real value using the
  * local redaction key. Tokens with no matching entry are left untouched.
  */

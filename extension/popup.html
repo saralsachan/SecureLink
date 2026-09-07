@@ -8,6 +8,15 @@
   <body>
     <main id="app">
       <h1>SecureLink</h1>
+      <div class="mode-row">
+        <label class="toggle">
+          <input id="local-only-toggle" type="checkbox" />
+          <span>Local-only mode</span>
+        </label>
+        <p class="toggle-hint" id="mode-hint">
+          Automatic (recommended).
+        </p>
+      </div>
       <button id="activate-agent" type="button">Activate Agent</button>
       <button id="vision-self-test" type="button">Run vision self-test</button>
       <p id="status" role="status">Ready to connect.</p>
@@ -50,6 +59,15 @@
             </tr>
           </tfoot>
         </table>
+      </details>
+      <details id="audit-panel" class="audit-panel">
+        <summary>Audit log</summary>
+        <div class="audit-toolbar">
+          <span class="audit-hint">Redactions and actions from this session.</span>
+          <button id="audit-clear" type="button">Clear</button>
+        </div>
+        <p id="audit-empty">No events yet this session.</p>
+        <ul id="audit-list"></ul>
       </details>
       <img id="capture-preview" alt="Captured tab preview" hidden />
     </main>

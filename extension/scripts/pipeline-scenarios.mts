@@ -26,6 +26,8 @@ import { detectSensitiveDomElements, type ElementNode } from "../src/dom-sensiti
 import { classifyOcrLines, type OcrLine } from "../src/pii-detection.ts";
 import { parseBlazeFaceBoxes } from "../src/blazeface-parse.ts";
 import { withTimeout } from "../src/async-utils.ts";
+import { decideLocalAction, DEFAULT_TASK } from "../src/local-heuristics.ts";
+import { redactionAuditTexts } from "../src/audit-log.ts";
 
 let failures = 0;
 let passes = 0;
@@ -342,23 +344,83 @@ async function degradationScenario(): Promise<void> {
   console.log(`      (degraded gracefully: ${surfaceMessage})`);
 }
 
+async function localOnlyScenario(): Promise<void> {
+  // A realistic login-ish page map: one already-facing sensitive field and a
+  // submit control. Local-only mode must pick the submit click deterministically
+  // and produce audit text that names the redaction without leaking the value.
+  const map: ElementNode[] = [
+    {
+      id: "user_email",
+      tag: "input",
+      role: null,
+      inputType: "email",
+      value: "user@example.com",
+      placeholder: null,
+      ariaLabel: "Email",
+      autocomplete: null,
+      bbox: { x: 0, y: 0, w: 300, h: 40 }
+    },
+    {
+      id: "login",
+      tag: "button",
+      role: null,
+      inputType: null,
+      value: "",
+      placeholder: null,
+      ariaLabel: "Log in",
+      autocomplete: null,
+      bbox: { x: 0, y: 0, w: 120, h: 44 }
+    }
+  ];
+
+  // Local-only decision: default task must resolve to clicking the submit-like
+  // control, no network involved.
+  const action = decideLocalAction(DEFAULT_TASK, map);
+  if (action.action !== "click" || action.target_id !== "login") {
+    throw new Error(`expected a click on #login, got ${JSON.stringify(action)}`);
+  }
+  console.log(`      (local-only decided: ${action.reasoning})`);
+
+  // What the audit log would say for the sensitive field — the pipeline order
+  // is redact-then-audit, so tokenize the field first, then summarize.
+  const tracker = createRedactionTracker();
+  tracker.redactNodes(map, ["user_email"]);
+  const texts = redactionAuditTexts(map, ["user_email"]);
+  if (texts.length !== 1) {
+    throw new Error("expected exactly one redaction audit entry");
+  }
+  if (!/Redacted email on <input> user_email/.test(texts[0])) {
+    throw new Error(`unexpected audit text: ${texts[0]}`);
+  }
+  if (/user@example\.com/.test(texts[0])) {
+    throw new Error("audit text leaked the real sensitive value");
+  }
+  console.log(`      (audit summary: ${texts[0]})`);
+}
+
 async function main(): Promise<void> {
   console.log("\n── Robustness scenarios ─────────────────────────────────────\n");
 
-  console.log("  [1/5] nested iframes");
+  console.log("  [1/6] nested iframes");
   await scenario("same-origin traversal with offset bboxes + cross-origin flag", iframeScenario);
 
-  console.log("  [2/5] React-style dynamic mount");
+  console.log("  [2/6] React-style dynamic mount");
   await scenario("mounted subtree fully re-processed and redacted", dynamicMountScenario);
 
-  console.log("  [3/5] zero-PII page");
+  console.log("  [3/6] zero-PII page");
   await scenario("no false positives, nothing blocked", zeroPiiScenario);
 
-  console.log("  [4/5] multiple overlapping faces");
+  console.log("  [4/6] multiple overlapping faces");
   await scenario("IoU dedupe to unique faces, pixel bboxes, bounded detections", facesScenario);
 
-  console.log("  [5/5] graceful degradation");
+  console.log("  [5/6] graceful degradation");
   await scenario("vision/server failures surface, never hang", degradationScenario);
+
+  console.log("  [6/6] local-only mode + audit text");
+  await scenario(
+    "deterministic submit click with no network + safe audit summaries",
+    localOnlyScenario
+  );
 
   console.log(`\n── Result: ${passes} passed, ${failures} failed ──\n`);
   if (failures > 0) {

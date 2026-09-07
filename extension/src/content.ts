@@ -18,12 +18,29 @@ import {
   type PipelineTimings,
   type ServerTimings
 } from "./pipeline-timing.ts";
+import {
+  appendAuditEntries,
+  redactionAuditTexts,
+  type AuditEventKind,
+  type AuditLogEntry
+} from "./audit-log.ts";
+import {
+  decideLocalAction,
+  DEFAULT_TASK,
+  type AgentAction,
+  type AgentMode
+} from "./local-heuristics.ts";
 
 type AgentMessage = {
   type: "SECURELINK_ACTIVATE_AGENT";
   sessionId: string;
   screenshotBase64: string;
   task?: string;
+  /**
+   * "automatic" (default) runs the full server pipeline; "local-only" makes
+   * zero network calls and uses deterministic local heuristics instead.
+   */
+  mode?: AgentMode;
 };
 
 type AgentStepPayload = {
@@ -31,15 +48,6 @@ type AgentStepPayload = {
   structural_map: ElementNode[];
   screenshot_base64: string;
   task: string;
-};
-
-type AgentAction = {
-  action: "click" | "type" | "scroll" | "navigate";
-  target_id?: string;
-  value?: string | null;
-  amount?: number;
-  reasoning: string;
-  requires_confirmation?: boolean;
 };
 
 type AgentStepResult = {
@@ -100,7 +108,10 @@ const state = {
   delta: null as DeltaTracker | null,
   observerAttached: false,
   /** True after we've seen any iframe; force full extraction per step. */
-  hasFrames: false
+  hasFrames: false,
+  /** Audit log buffer for the current session (flushed to storage + popup). */
+  audit: [] as AuditLogEntry[],
+  auditSeq: 0
 };
 
 async function readPopupStageTimings(sessionId: string): Promise<{
@@ -129,6 +140,32 @@ function resetSession(sessionId: string): void {
   state.step = 0;
   state.cachedMap = null;
   state.redactor = createRedactionTracker();
+  state.audit = [];
+  state.auditSeq = 0;
+}
+
+/**
+ * Append an audit entry to the current session's buffer. Entries are flushed to
+ * `chrome.storage.session` (and mirrored to the popup) at the end of each step,
+ * or sooner once the buffer grows past a small threshold.
+ */
+function recordAudit(kind: AuditEventKind, text: string): void {
+  if (state.sessionId === null) {
+    return;
+  }
+  state.audit.push({ seq: ++state.auditSeq, ts: Date.now(), kind, text });
+  if (state.audit.length >= 25) {
+    void flushAudit();
+  }
+}
+
+async function flushAudit(): Promise<void> {
+  if (state.sessionId === null || state.audit.length === 0) {
+    return;
+  }
+  const entries = state.audit;
+  state.audit = [];
+  await appendAuditEntries(state.sessionId, entries);
 }
 
 function ensureObserver(): void {
@@ -317,6 +354,7 @@ async function executeAction(
     );
     if (!shouldProceed) {
       console.info("SecureLink click cancelled by user.");
+      recordAudit("info", `Cancelled clicking "${target.textContent?.trim() || action.target_id}"`);
       return;
     }
 
@@ -328,6 +366,7 @@ async function executeAction(
       })
     );
     console.info("SecureLink dispatched click on:", target);
+    recordAudit("action", `Clicked "${target.textContent?.trim() || action.target_id}" (#${action.target_id})`);
     return;
   }
 
@@ -348,12 +387,14 @@ async function executeAction(
     );
     if (!shouldProceed) {
       console.info("SecureLink type cancelled by user.");
+      recordAudit("info", `Cancelled typing into "${action.target_id}"`);
       return;
     }
 
     setNativeValue(target, realValue);
     dispatchInput(target, realValue);
     console.info("SecureLink typed into:", target, JSON.stringify(realValue));
+    recordAudit("action", `Typed into "${action.target_id}" (${String(realValue).length} characters, redacted token)`);
     return;
   }
 
@@ -361,6 +402,7 @@ async function executeAction(
     const shouldProceed = confirmIfNeeded(action, `SecureLink wants to scroll the page. Proceed?`);
     if (!shouldProceed) {
       console.info("SecureLink scroll cancelled by user.");
+      recordAudit("info", "Cancelled scrolling the page");
       return;
     }
 
@@ -372,6 +414,7 @@ async function executeAction(
 
     window.scrollBy({ top: amount, behavior: "smooth" });
     console.info("SecureLink scrolled window by:", amount);
+    recordAudit("action", `Scrolled the page by ${Math.round(amount)}px`);
     return;
   }
 
@@ -383,6 +426,7 @@ async function executeAction(
     );
     if (!shouldProceed) {
       console.info("SecureLink navigate cancelled by user.");
+      recordAudit("info", `Cancelled navigating to "${destination}"`);
       return;
     }
 
@@ -392,6 +436,7 @@ async function executeAction(
       window.location.href = new URL(destination, window.location.href).href;
     }
     console.info("SecureLink navigating to:", destination);
+    recordAudit("action", `Navigated to "${destination}"`);
     return;
   }
 
@@ -498,10 +543,20 @@ chrome.runtime.onMessage.addListener(
       try {
         console.info("SecureLink popup connected on:", document.title);
 
-        if (state.sessionId !== message.sessionId) {
+        const isNewSession = state.sessionId !== message.sessionId;
+
+        if (isNewSession) {
           resetSession(message.sessionId);
         }
         state.step += 1;
+
+        const mode: AgentMode = message.mode ?? "automatic";
+        recordAudit(
+          "info",
+          isNewSession
+            ? `Session started in ${mode} mode.`
+            : `Step ${state.step} (${mode} mode).`
+        );
 
         const popupTimings = await readPopupStageTimings(message.sessionId);
 
@@ -560,6 +615,7 @@ chrome.runtime.onMessage.addListener(
             metrics,
             errors
           });
+          await flushAudit();
           sendResponse({
             ok: false,
             title: document.title,
@@ -589,13 +645,77 @@ chrome.runtime.onMessage.addListener(
           state.redactor.redactNodes(collected.map, collected.redactionIds);
         });
 
+        for (const text of redactionAuditTexts(
+          collected.map,
+          collected.redactionIds
+        )) {
+          recordAudit("redaction", text);
+        }
+
+        // Stage: decide + execute the action.
+        const localAction = mode === "local-only"
+          ? await stage("actionExecution", () =>
+              decideLocalAction(message.task ?? DEFAULT_TASK, collected.map)
+            )
+          : null;
+
+        if (mode === "local-only") {
+          if (!localAction || localAction.action === "none") {
+            await flushAudit();
+            await postPerfUpdate({
+              type: "SECURELINK_PERF_UPDATE",
+              sessionId: message.sessionId,
+              timings: normaliseTimings(timings),
+              server,
+              metrics,
+              errors
+            });
+            sendResponse({
+              ok: false,
+              title: document.title,
+              error: localAction?.reasoning ?? "No actionable element found on the page.",
+              timings: aggregate ?? normaliseTimings(timings),
+              errors
+            });
+            return;
+          }
+
+          recordAudit("info", `Local-only decision: ${localAction.reasoning}`);
+          const chosen = localAction;
+          await stage("actionExecution", () =>
+            executeAction(chosen, state.redactor.getRedactionKey())
+          );
+
+          aggregate = normaliseTimings(timings);
+          logPerStage(timings, metrics);
+          logPipelineTimings(timings, { server: null, metrics });
+
+          await postPerfUpdate({
+            type: "SECURELINK_PERF_UPDATE",
+            sessionId: message.sessionId,
+            timings: aggregate,
+            server,
+            metrics,
+            errors
+          });
+          await flushAudit();
+          sendResponse({
+            ok: true,
+            title: document.title,
+            action: localAction,
+            timings: aggregate,
+            errors
+          });
+          return;
+        }
+
         // Stage: network round trip (transport + server processing).
         const result = await stage("networkRoundTrip", () =>
           sendToAgent({
             session_id: message.sessionId,
             structural_map: collected.map,
             screenshot_base64: message.screenshotBase64,
-            task: message.task ?? "Activate agent"
+            task: message.task ?? DEFAULT_TASK
           })
         );
         if (result) {
@@ -613,6 +733,7 @@ chrome.runtime.onMessage.addListener(
             metrics,
             errors
           });
+          await flushAudit();
           sendResponse({
             ok: false,
             title: document.title,
@@ -642,6 +763,7 @@ chrome.runtime.onMessage.addListener(
           metrics,
           errors
         });
+        await flushAudit();
 
         console.info(
           `SecureLink delta summary: ${metrics.changedElements} changed / ${metrics.totalElements} total ` +
@@ -679,6 +801,7 @@ chrome.runtime.onMessage.addListener(
               : "Unknown agent activation error";
 
         console.error("SecureLink agent flow failed:", error);
+        await flushAudit();
         sendResponse({ ok: false, title: document.title, error: messageText });
       }
     })();

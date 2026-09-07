@@ -6,7 +6,7 @@
   "scripts": {
     "build": "vite build && vite build --config vite.content.config.ts",
     "lint": "tsc --noEmit",
-    "test": "node --disable-warning=ExperimentalWarning --test tests/detectSensitiveDomElements.test.ts tests/pii-detection.test.ts tests/redaction.test.ts tests/pipeline-timing.test.ts tests/redaction-tracker.test.ts tests/dom-map.test.ts tests/delta.test.ts tests/frames.test.ts tests/dynamic-dom.test.ts tests/zero-pii.test.ts tests/blazeface-parse.test.ts tests/async-utils.test.ts"
+    "test": "node --disable-warning=ExperimentalWarning --test tests/detectSensitiveDomElements.test.ts tests/pii-detection.test.ts tests/redaction.test.ts tests/pipeline-timing.test.ts tests/redaction-tracker.test.ts tests/dom-map.test.ts tests/delta.test.ts tests/frames.test.ts tests/dynamic-dom.test.ts tests/zero-pii.test.ts tests/blazeface-parse.test.ts tests/async-utils.test.ts tests/local-heuristics.test.ts tests/audit-log.test.ts"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.0.8",
