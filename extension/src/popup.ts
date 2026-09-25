@@ -83,6 +83,11 @@ type PerfUpdateMessage = {
   errors?: string[];
 };
 
+type ConfirmationPendingMessage = {
+  type: "SECURELINK_CONFIRM_PENDING";
+  detail: string;
+};
+
 const STAGE_ROWS: Array<{ key: keyof PipelineTimings; label: string }> = [
   { key: "capture", label: "Screenshot capture" },
   { key: "structuralMap", label: "Structural map" },
@@ -100,12 +105,13 @@ const SERVER_ROWS: Array<{ key: keyof ServerTimings; label: string }> = [
   { key: "groundingMs", label: "Server · grounding" }
 ];
 
-type Phase = "idle" | "capturing" | "reasoning" | "executing";
+type Phase = "idle" | "capturing" | "reasoning" | "waiting" | "executing";
 
 const PHASE_TEXT: Record<Phase, string> = {
   idle: "Ready",
   capturing: "Capturing…",
   reasoning: "Reasoning…",
+  waiting: "Waiting for your approval on the page…",
   executing: "Executing…"
 };
 
@@ -594,6 +600,13 @@ auditClear?.addEventListener("click", async () => {
 
 chrome.runtime.onMessage.addListener((message: unknown) => {
   if (typeof message !== "object" || message === null) {
+    return;
+  }
+
+  const confirmationMessage = message as Partial<ConfirmationPendingMessage>;
+
+  if (confirmationMessage.type === "SECURELINK_CONFIRM_PENDING") {
+    setPhase("waiting");
     return;
   }
 

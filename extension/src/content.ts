@@ -91,6 +91,16 @@ type RedactDebugResponse = {
   devicePixelRatio: number;
 };
 
+/**
+ * Fires from the content script the instant an in-page confirmation dialog is
+ * shown, so an open popup can switch its status to "waiting for approval"
+ * instead of looking frozen mid-reasoning.
+ */
+export type ConfirmationPendingMessage = {
+  type: "SECURELINK_CONFIRM_PENDING";
+  detail: string;
+};
+
 const AGENT_STEP_URL = "http://localhost:8000/agent/step";
 
 /** Abort the network round trip after this long (the server may be down). */
@@ -334,6 +344,23 @@ function confirmIfNeeded(action: AgentAction, message: string): Promise<boolean>
 }
 
 /**
+ * Tell an open popup that the pipeline has paused on an in-page confirmation
+ * dialog. Mirrors the audit-log broadcast pattern; safe when the popup is
+ * closed or no listener is attached.
+ */
+async function reportConfirmationPending(detail: string): Promise<void> {
+  try {
+    const message: ConfirmationPendingMessage = {
+      type: "SECURELINK_CONFIRM_PENDING",
+      detail
+    };
+    await chrome.runtime.sendMessage(message);
+  } catch {
+    // Popup closed — the dialog in the page is the fallback indicator.
+  }
+}
+
+/**
  * Clean in-page confirmation dialog (replaces the native `confirm()`). A small
  * centered card on a dimmed overlay with only two buttons, full keyboard
  * support, and immediate cleanup. Falls back to a native confirm if the page
@@ -388,6 +415,7 @@ function requestSensitiveConfirmation(bodyText: string): Promise<boolean> {
   card.append(title, body, actions);
   overlay.append(card);
   document.body.appendChild(overlay);
+  void reportConfirmationPending(bodyText);
 
   const resolve = (proceedValue: boolean): void => {
     overlay.remove();
