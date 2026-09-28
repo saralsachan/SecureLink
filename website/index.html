@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SecureLink — The browser agent that sees the page without seeing your secrets</title>
+  <meta
+    name="description"
+    content="SecureLink is a privacy-first browser agent. It detects sensitive content on-device — faces, PII, passwords — redacts it into anonymous tokens, and only then lets an AI act on the sanitized context."
+  />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f172a'/%3E%3Cpath d='M17.2 6a7 7 0 0 1 7 7v1h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2h-6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h7V6z' fill='none' stroke='%23ffffff' stroke-width='2.4' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <header class="site-header" id="top">
+    <div class="container header-inner">
+      <a class="brand" href="#top" aria-label="SecureLink home">
+        <svg class="brand-mark" width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#0f172a" />
+          <path d="M17.2 6a7 7 0 0 1 7 7v1h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2h-6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h7V6z" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linejoin="round" />
+        </svg>
+        <span class="brand-name">SecureLink</span>
+      </a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#how">How it works</a>
+        <a href="#security">Security</a>
+        <a href="#modes">Two ways to run</a>
+        <a href="#faq">FAQ</a>
+        <a href="#demo">Live demo</a>
+      </nav>
+      <a class="btn btn-dark header-cta" href="#getstarted">Install</a>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- ── Hero ─────────────────────────────────────────────────────────── -->
+    <section class="hero">
+      <div class="container">
+        <p class="eyebrow"><span class="eyebrow-dot"></span>On-device perception · Redaction-first browser agent</p>
+        <h1 class="hero-title">
+          The browser agent that sees the page<br />
+          <span class="grad-ink">without seeing your secrets.</span>
+        </h1>
+        <p class="hero-sub">
+          SecureLink detects sensitive content right in your tab — passwords, emails, credit
+          cards, faces — and redacts it into anonymous tokens before any AI ever sees a pixel.
+          Sensitive actions always ask you first.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-dark" href="#demo">Try the live demo</a>
+          <a class="btn btn-outline" href="#how">How it works</a>
+          <a class="link-arrow" href="browser_agent_architecture.md">Read the architecture →</a>
+        </div>
+        <p class="hero-facts">
+          Runs in Edge / Chrome &nbsp;·&nbsp; Zero-knowledge keys &nbsp;·&nbsp; Optional serverless mode
+        </p>
+      </div>
+    </section>
+
+    <!-- ── Product mockup ───────────────────────────────────────────────── -->
+    <section class="mock-section" aria-label="Product preview">
+      <div class="container">
+        <div class="browser">
+          <div class="browser-bar">
+            <span class="dot dot-red"></span><span class="dot dot-amber"></span><span class="dot dot-green"></span>
+            <span class="browser-url"><span class="lock" aria-hidden="true"></span>localhost:3000/test.html</span>
+          </div>
+          <div class="browser-body">
+            <!-- fictional target page -->
+            <div class="mini-page" aria-hidden="true">
+              <div class="mini-page-head">
+                <span class="mini-logo"></span><span class="mini-title">Acme — Try it free</span>
+              </div>
+              <h4 class="mini-h">Create your account</h4>
+              <label class="mini-label">Name</label>
+              <div class="mini-field">Sarah Smith</div>
+              <label class="mini-label">Email</label>
+              <div class="mini-field mini-field-redacted" data-tip="[REDACTED_EMAIL_1] · kept local">
+                sarah@acme.com
+              </div>
+              <label class="mini-label">Password</label>
+              <div class="mini-field mini-field-redacted">••••••••••</div>
+              <div class="mini-submit">Create account
+                <svg class="mini-cursor" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2l15 8.5-7 1.5-2.5 7z" fill="#146ef5" stroke="#fff" stroke-width="1.2"/></svg>
+              </div>
+            </div>
+
+            <!-- the actual popup -->
+            <div class="popup" role="img" aria-label="SecureLink popup preview">
+              <div class="popup-top">
+                <span class="popup-brand">SecureLink</span>
+                <span class="popup-status"><span class="popup-status-dot"></span>Ready</span>
+              </div>
+              <div class="popup-control">
+                <span class="popup-task" data-glow="type Sarah Smith">type Sarah Smith</span>
+                <span class="popup-run">Run</span>
+              </div>
+              <div class="popup-toggle">
+                <span class="popup-switch"><span class="popup-thumb"></span></span>
+                <span class="popup-toggle-label">Local-only mode</span>
+              </div>
+              <div class="popup-review">
+                <div class="popup-pane"><span class="pane-tag">Raw</span><div class="pane-thumb pane-thumb-raw"></div></div>
+                <div class="popup-pane"><span class="pane-tag pane-tag-blue">Redacted</span><div class="pane-thumb pane-thumb-red"></div></div>
+              </div>
+              <div class="popup-audit">
+                <div class="audit-head">Audit log</div>
+                <ul>
+                  <li><span class="badge badge-red">redaction</span> Email on &#60;input&#62; → [REDACTED_EMAIL_1]</li>
+                  <li><span class="badge badge-blue">decision</span> Local-only: click “Create account”</li>
+                  <li><span class="badge badge-green">action</span> Clicked “Create account” (#el_3)</li>
+                </ul>
+              </div>
+            </div>
+
+            <!-- floating annotations -->
+            <div class="chip chip-face"><span class="chip-dot"></span>Faces blurred · BlazeFace + YuNet</div>
+            <div class="chip chip-server">Server receives only tokens + redacted shot <span class="chip-arrow"></span></div>
+            <div class="chip chip-local"><span class="chip-dot chip-dot-blue"></span>Real values stay in this browser</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Story / problem ──────────────────────────────────────────────── -->
+    <section class="band band-paper">
+      <div class="container story">
+        <p class="eyebrow eyebrow-dark">The problem</p>
+        <h2 class="sec-title">Browser agents see everything. Including the things you didn't ask them to.</h2>
+        <p class="sec-lead">
+          Today's automation doesn't ask permission — it screenshots your inbox, reads your
+          session, hands your typed password to a model in some data center. That's why most
+          people won't let an agent near their accounts.
+        </p>
+        <div class="story-grid">
+          <div class="story-card">
+            <div class="story-card-label">A naïve agent</div>
+            <div class="story-card-body">
+              <p>Full screenshot of the page — password field included — is sent to the model verbatim.</p>
+              <ul class="cross-list">
+                <li>Credentials travel to the server</li>
+                <li>Redoable on every keystroke</li>
+                <li>You find out later, if ever</li>
+              </ul>
+            </div>
+          </div>
+          <div class="story-vs" aria-hidden="true">→</div>
+          <div class="story-card story-card-good">
+            <div class="story-card-label">SecureLink</div>
+            <div class="story-card-body">
+              <p>Sensitive regions are detected on-device, blurred, and replaced with anonymous tokens <em>before</em> anything is sent.</p>
+              <ul class="good-list">
+                <li>Server sees only redacted context</li>
+                <li>Tokens map back to real elements locally</li>
+                <li>Sensitive actions ask for your permission</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── How it works ─────────────────────────────────────────────────── -->
+    <section class="band" id="how">
+      <div class="container">
+        <p class="eyebrow eyebrow-blue">How it works</p>
+        <h2 class="sec-title">Look. Redact. Then act.</h2>
+        <p class="sec-lead">Every step before the network is on-device. The server — when used — only ever receives the sanitized result.</p>
+
+        <ol class="steps">
+          <li class="step">
+            <div class="step-num">01</div>
+            <h3 class="step-title">Perceive the page</h3>
+            <p class="step-text">
+              A structural map of the tab (DOM boxes + roles + labels) is built in-browser, and a
+              small local ViT runs straight on the screen — faces, text, UI — all inside a Web Worker.
+            </p>
+          </li>
+          <li class="step">
+            <div class="step-num">02</div>
+            <h3 class="step-title">Redact sensitive content</h3>
+            <p class="step-text">
+              A dual-channel detector (DOM rules + vision/OCR) flags passwords, emails, card numbers
+              and faces. Values become <code>[REDACTED_EMAIL_1]</code>-style tokens; the mapping back
+              to the real DOM is kept in your browser only.
+            </p>
+          </li>
+          <li class="step">
+            <div class="step-num">03</div>
+            <h3 class="step-title">Decide, confirm, act</h3>
+            <p class="step-text">
+              A tiered reasoner chooses the next action — local heuristics first, VLM reasoning only if
+              needed. Clicks, typing and navigation pause on a confirmation dialog you approve, and the
+              action executes against the <em>real</em> element via the local token map.
+            </p>
+          </li>
+        </ol>
+        <p class="steps-foot">
+          <span class="dot-inline"></span>
+          In <strong>automatic mode</strong> the server layer adds a privacy firewall, VLM planning and grounding —
+          and the firewall re-checks everything the model could still see. In <strong>local-only mode</strong> the
+          network is never touched at all. <a class="link-arrow" href="browser_agent_architecture.md">Full architecture →</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- ── Security grid ────────────────────────────────────────────────── -->
+    <section class="band band-paper" id="security">
+      <div class="container">
+        <p class="eyebrow eyebrow-dark">Security by construction</p>
+        <h2 class="sec-title">Privacy is not a toggle. It's the pipeline.</h2>
+        <div class="grid">
+          <article class="card">
+            <div class="card-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9.2 12.2l2 2 3.6-3.9"/></svg>
+            </div>
+            <h3 class="card-title">Redact, then send</h3>
+            <p class="card-text">Sensitive regions are detected and neutralized on the page before anything leaves the tab. The network never sees raw credentials.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.8"/></svg>
+            </div>
+            <h3 class="card-title">Dual-channel detection</h3>
+            <p class="card-text">DOM rules catch structured fields while a local vision model + OCR catch everything else — faces, on-screen text, unusual layouts.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4.5"/><path d="M11 12L20 3m-3 0h3v3M9 18l-2 2"/></svg>
+            </div>
+            <h3 class="card-title">Token map stays local</h3>
+            <p class="card-text"><code>[REDACTED_EMAIL_1]</code> is all that travels. Rules resolving tokens back to real elements live in the browser and are used only when executing actions.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M7 6V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2M5 6l1.2 12a2 2 0 0 0 2 1.8h7.6a2 2 0 0 0 2-1.8L19 6M9.5 10.5v5M14.5 10.5v5"/></svg>
+            </div>
+            <h3 class="card-title">Second pair of eyes</h3>
+            <p class="card-text">The server-side privacy firewall re-scans what the model receives — leaked PII, faces, Luhn-valid cards get blocked before they reach the model.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9.5 4A7.5 3.5 0 0 0 2 7.5c0 6 5 12 10 12s10-6 10-12A7.5 3.5 0 0 0 14.5 4c-1.5 0-2.9.6-2.5 2-2-3-4.5-2.5 2.5 6.5 0 0 1 2-1"/><path d="M9 12.5l2 2 4-4.2"/></svg>
+            </div>
+            <h3 class="card-title">Ask before you act</h3>
+            <p class="card-text">Every sensitive action — typing, clicking, navigating — pauses on a clean confirmation dialog in the page. Automation is gated, never silent.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 5h12M8 12h12M8 19h12M4 5h.01M4 12h.01M4 19h.01"/></svg>
+            </div>
+            <h3 class="card-title">A real audit trail</h3>
+            <p class="card-text">Every redaction and action is logged with timestamps and token-level summaries — never raw values. Reviewable in the popup, kept only in the session.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Performance & resilience ────────────────────────────────────── -->
+    <section class="band" id="reliability">
+      <div class="container">
+        <p class="eyebrow eyebrow-blue">Performance &amp; resilience</p>
+        <h2 class="sec-title">Fast on-device, layered reasoning — and it never hangs.</h2>
+        <p class="sec-lead">
+          Built to feel instant on a laptop-class machine, with clear degradation
+          instead of freezes when any stage is unavailable.
+        </p>
+        <ul class="reliability">
+          <li><strong>INT8-quantized vision.</strong> The MobileViT + YOLO-family models run
+            locally inside a Web Worker, so perception never blocks the page's UI thread.</li>
+          <li><strong>Delta state sync.</strong> Only changed DOM regions are re-extracted and
+            re-redacted on later steps; the structural map is cached per site and session.</li>
+          <li><strong>Tiered reasoning.</strong> Local heuristics decide trivial steps (scroll,
+            obvious clicks) with zero network; the local ViT confirms; the server VLM is used
+            only when human-level understanding is genuinely needed.</li>
+          <li><strong>Graceful degradation.</strong> Every stage is wrapped: a dead model, an
+            unreachable server, or a timeout surfaces as a readable error — the tab never hangs,
+            and no partial or unredacted payload is ever sent.</li>
+        </ul>
+        <div class="metrics" role="list" aria-label="By the numbers">
+          <div class="metric" role="listitem">
+            <strong>INT8</strong><span>client-side vision models</span>
+          </div>
+          <div class="metric" role="listitem">
+            <strong>3</strong><span>reasoning tiers — heuristic → ViT → VLM</span>
+          </div>
+          <div class="metric" role="listitem">
+            <strong>30&nbsp;s</strong><span>network guard · no silent hangs</span>
+          </div>
+          <div class="metric" role="listitem">
+            <strong>115+</strong><span>automated tests, all green</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Modes ────────────────────────────────────────────────────────── -->
+    <section class="band band-paper" id="modes">
+      <div class="container">
+        <p class="eyebrow eyebrow-blue">Two ways to run</p>
+        <h2 class="sec-title">The same privacy promise, with or without a server</h2>
+        <div class="modes">
+          <div class="mode mode-tone">
+            <span class="mode-tag">Default · richest reasoning</span>
+            <h3 class="mode-title"><span class="mode-dot"></span>Automatic</h3>
+            <p class="mode-text">Local perception + redaction, then a privacy firewall and VLM/LLM planning on the server. Best for multi-step tasks and natural language.</p>
+            <ul class="mode-list">
+              <li>OpenAI-compatible or local Ollama backends</li>
+              <li>Per-session conversation history</li>
+              <li>Grounding maps model intent to real elements</li>
+            </ul>
+          </div>
+          <div class="mode mode-flat">
+            <span class="mode-tag mode-tag-dark">Zero network · no keys</span>
+            <h3 class="mode-title"><span class="mode-dot mode-dot-amber"></span>Local-only</h3>
+            <p class="mode-text">Deterministic heuristics run entirely in the tab — submit the next button, scroll, fill the first empty field. Nothing ever leaves your machine.</p>
+            <ul class="mode-list">
+              <li>Great for demos and quick automations</li>
+              <li>No API keys, no server, no setup</li>
+              <li>Same redaction + audit + confirmation flow</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── What you can do ────────────────────────────────────────────── -->
+    <section class="band" id="use">
+      <div class="container">
+        <p class="eyebrow eyebrow-dark">What you can do with it</p>
+        <h2 class="sec-title">A taste of real task inputs</h2>
+        <div class="use-grid">
+          <article class="use-card">
+            <code class="use-tag">type Sarah Smith</code>
+            <h3 class="use-title">Fill the first empty field</h3>
+            <p class="use-text">Deterministic, gated by a confirmation, and logged as a token-level audit entry.</p>
+          </article>
+          <article class="use-card">
+            <code class="use-tag">digest this page</code>
+            <h3 class="use-title">Route around sensitive content</h3>
+            <p class="use-text">The model plans over the redacted context — secrets aren't part of the conversation.</p>
+          </article>
+          <article class="use-card">
+            <code class="use-tag">go to https://…</code>
+            <h3 class="use-title">Controlled navigation</h3>
+            <p class="use-text">Every navigation pauses for your permission before the tab moves.</p>
+          </article>
+          <article class="use-card">
+            <code class="use-tag">fill &amp; submit the form</code>
+            <h3 class="use-title">Multi-step, remembered</h3>
+            <p class="use-text">Per-session history lets one task span several steps without starting over.</p>
+          </article>
+          <article class="use-card">
+            <code class="use-tag">scroll down</code>
+            <h3 class="use-title">Audit-friendly scrolling</h3>
+            <p class="use-text">Delta sync keeps later steps cheap — only changed regions are revisited.</p>
+          </article>
+          <article class="use-card">
+            <code class="use-tag">Activate agent</code>
+            <h3 class="use-title">One-click submit resolution</h3>
+            <p class="use-text">The default task finds the most likely submit control with zero cloud round-trips.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Interactive micro-demo ───────────────────────────────────────── -->
+    <section class="band band-paper" id="demo">
+      <div class="container">
+        <p class="eyebrow eyebrow-dark">Live demo</p>
+        <h2 class="sec-title">Type something sensitive. Watch it never leave.</h2>
+        <div class="demo-shell">
+          <form class="demo-form" id="mini-demo" novalidate>
+            <label for="demo-input" class="demo-label">Draft a message with secrets in it</label>
+            <div class="demo-input-row">
+              <input
+                id="demo-input"
+                class="demo-input"
+                type="text"
+                placeholder="e.g. sarah@acme.com, 4111 1111 1111 1111, 555-010-1234, password"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button class="btn btn-dark" type="submit">Redact it</button>
+            </div>
+            <p class="demo-hint">
+              This demo runs entirely in your browser — nothing is sent anywhere.
+              <button type="button" class="demo-sample" id="demo-sample">Use a sample →</button>
+            </p>
+          </form>
+
+          <div class="demo-output" aria-live="polite">
+            <div class="demo-output-head">
+              <span>What the server would receive</span>
+              <span class="demo-token-count"><strong id="demo-count">0</strong> token types masked</span>
+            </div>
+            <div class="demo-raw" id="demo-raw">
+              <span class="demo-placeholder">Your message appears here, redacted.</span>
+            </div>
+            <div class="demo-fields" id="demo-fields"></div>
+          </div>
+
+          <div class="demo-audit" aria-label="Sample audit entries">
+            <div class="audit-head">Audit log (token-level only)</div>
+            <ul id="demo-audit-list">
+              <li class="audit-empty">Type something above to see the pipeline in action.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── FAQ ────────────────────────────────────────────────────────── -->
+    <section class="band" id="faq">
+      <div class="container faq">
+        <p class="eyebrow eyebrow-blue">FAQ</p>
+        <h2 class="sec-title">Questions, answered.</h2>
+        <details class="faq-item">
+          <summary>Does the server ever see my password?</summary>
+          <p>No. Values become anonymous tokens — <code>[REDACTED_EMAIL_1]</code> — on-device
+          before anything leaves the tab. The server receives only the sanitized structural map
+          and redacted screenshot, and the privacy firewall re-checks both layers before they
+          reach a model.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Is a server required at all?</summary>
+          <p>No. <strong>Local-only mode</strong> runs entirely in the browser with deterministic
+          heuristics — no setup, no keys, no network. <strong>Automatic mode</strong> adds VLM
+          planning and multi-step reasoning via the Agent server (localhost:8000 by default).</p>
+        </details>
+        <details class="faq-item">
+          <summary>Which browsers and pages does it support?</summary>
+          <p>Edge and Chrome (Manifest V3). The content script runs on any page. Cross-origin
+          iframes and shadow DOM are <em>flagged</em> rather than inspected directly — their
+          contents are only reachable through the screenshot path.</p>
+        </details>
+        <details class="faq-item">
+          <summary>How do I know it actually redacted something?</summary>
+          <p>The popup shows a redacted screenshot preview side by side with the raw frame, and
+          every redaction is recorded in a token-level audit log you can review in the session —
+          timestamps included, raw values never.</p>
+        </details>
+        <details class="faq-item">
+          <summary>How much does it cost?</summary>
+          <p>The extension is free and the perception models run on-device. Automatic mode only
+          costs if you pay for a VLM API key — or point the server at a free local Ollama install.</p>
+        </details>
+      </div>
+    </section>
+
+    <!-- ── Get started ──────────────────────────────────────────────────── -->
+    <section class="band band-paper" id="getstarted">
+      <div class="container">
+        <p class="eyebrow eyebrow-blue">Get started</p>
+        <h2 class="sec-title">Running it takes about five minutes</h2>
+
+        <div class="gs-grid">
+          <div class="gs-item">
+            <span class="gs-num">1</span>
+            <h3 class="gs-title">Build the extension</h3>
+            <pre class="code"><code><span class="c-prompt">cd extension</span>
+npm install
+npm run build   <span class="c-comment"># → dist/</span></code></pre>
+          </div>
+          <div class="gs-item">
+            <span class="gs-num">2</span>
+            <h3 class="gs-title">Load it unpacked</h3>
+            <p class="gs-text">Open <code>edge://extensions</code> (or <code>chrome://extensions</code>), enable <strong>Developer mode</strong>, and <strong>Load unpacked</strong> the <code>extension/dist</code> folder. Pin the icon.</p>
+          </div>
+          <div class="gs-item">
+            <span class="gs-num">3</span>
+            <h3 class="gs-title">Run the demo page</h3>
+            <pre class="code"><code><span class="c-prompt"># keep port 8000 free for the agent server
+</span>python -m http.server 3000 --directory extension</code></pre>
+            <p class="gs-text">Open <code>http://127.0.0.1:3000/test.html</code>, click the SecureLink icon, and press <strong>Run</strong>. Toggle <strong>Local-only mode</strong> to go fully offline.</p>
+          </div>
+          <div class="gs-item">
+            <span class="gs-num">4</span>
+            <h3 class="gs-title">(Optional) Start the agent server</h3>
+            <pre class="code"><code><span class="c-prompt">cd inference-server
+</span>python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+cp .env.example .env        <span class="c-comment"># add a VLM key</span>
+.venv\Scripts\python -m uvicorn server:app --host 0.0.0.0 --port 8000</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Pull quote ───────────────────────────────────────────────────── -->
+    <section class="band band-ink">
+      <div class="container quote">
+        <p class="quote-text">
+          “The model should reason about what's on the page. It doesn't need to read your
+          password to help you sign in.”
+        </p>
+        <p class="quote-source">— a principle, not a slogan</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <div class="footer-brand">
+        <svg class="brand-mark" width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#0f172a" />
+          <path d="M17.2 6a7 7 0 0 1 7 7v1h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2h-6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h7V6z" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linejoin="round" />
+        </svg>
+        <span class="footer-name">SecureLink</span>
+      </div>
+      <nav class="footer-nav" aria-label="Footer">
+        <a href="browser_agent_architecture.md">Architecture</a>
+        <a href="browser_agent_execution_plan.md">Roadmap</a>
+        <a href="#faq">FAQ</a>
+        <a href="#demo">Live demo</a>
+        <a href="#getstarted">Get started</a>
+      </nav>
+      <p class="footer-note">On-device perception · Privacy-first browser agent · MV3 · TypeScript · FastAPI</p>
+    </div>
+  </footer>
+
+  <script src="site.js"></script>
+</body>
+</html>
